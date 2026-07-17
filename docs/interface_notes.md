@@ -117,6 +117,10 @@
 - 公式コードのキーは **`n_vecs`（複数形）**（containers.py:325）。README:254 の記述は `n_vec`（単数）で**ドキュメント誤記**。
   → `constants.OBS_KEYS` の転記は公式コード優先で `n_vecs` を採用。
 - `belongs_to` / `pos` / `orn` は未配置時 `None`（items.py:16–19）。
+- **`spacing` は `init_states`/`observation` のいずれにも存在しない**（上表の転記済みキー一覧参照）。
+  `config['spacing']` は `MultiContainerManager.build`（containers.py:270,273）が内部でのみ読む値であり、
+  agent 側には渡らない。コンテナ原点世界X（`offset_x`）が必要な場合は `cdict["center"][0]` を
+  **直接**使用し、`spacing` からの逆算・`index * spacing` の再計算は行わない（詳細・根拠は §I-8）。
 
 ---
 
@@ -220,6 +224,26 @@
    `buffer` がどうしても必要な場合のみ、公式実装の関係式
    `buffer = float(cdict["center"][2]) - float(cdict["height"]) / 2.0` から都度復元し、キー欠落を
    固定値で埋めない。`実装詳細仕様書.md §4.2` を本方針で修正済み。
+8. **【T-012計画中に発覚・解決済】`state.py`/`container_space.py` 仕様（旧§3.1/§4.2）の
+   `offset_x = index * spacing` 前提の誤り**:
+   旧仕様書 §3.1 は「コンテナ i の原点世界X = `offset_x_i = i * spacing`（`spacing` は
+   `init_states` から取得）」としていたが、`spacing` は agent I/F（`init_states`: env.py:170–176 /
+   `observation`: env.py:278–286）のいずれにも**存在しない**（§E 参照）。`config['spacing']` は
+   `MultiContainerManager.build`（containers.py:270,273）が `offset_x = i * spacing` の算出に
+   内部で使うのみで、agent 側には転記されない。
+   一方、コンテナ原点世界Xは `cdict["center"][0]` として観測可能である。公式コード
+   `containers.py:61` `pos=(0,0,hz+buffer)`（局所座標、x=0）→ `containers.py:66`
+   `self.center = self.local_to_global(pos)` → `containers.py:238–240`
+   `local_to_global(l) = (l[0]+offset_x, l[1], l[2])` により、**`center[0] == offset_x`** が
+   恒等的に成り立つ（`containers.py:243–245` の `global_to_local(g) = (g[0]-offset_x, g[1], g[2])` も
+   §3.1 の X 限定オフセット変換と一致）。
+   → **解決方針**（人間承認済み・2026-07-17）：`offset_x = float(np.asarray(cdict["center"])[0])` を
+   **直接**使用する。`center.x` から `spacing` を逆算したり `index * spacing` を再計算したりしない
+   （複数コンテナの座標変換不具合を隠す可能性があるため）。`build_container_space` の signature から
+   `spacing` 引数を削除する。`実装詳細仕様書.md §3.1/§4.2/§4.4` および `初期検討_実装手順書.md §1.2` を
+   本方針で修正済み。なお `simulator/` 側の実装・テスト（`container_space.py` 等）の追随は別タスクとし、
+   本訂正時点では未着手（既存 golden fixture は `center[0]==index*spacing` で自己無矛盾のため、
+   実装移行後も期待値の数値は変わらない見込み）。
 
 ---
 
@@ -452,3 +476,4 @@ z方向を拘束しない面（XY方向のみの制約）。`floor_z`/`ceil_z` �
 | 2026-07-17 | T-007 仕様補正：§K 追加（cut plane の floor_z/ceil_z 反映規則、小棚・大棚AABBの復元式とクリップ・正体積フィルタ、生成条件は `cut_planes` に依存させない設計判断、T-006 fixture の `cut_x`/`cut_y` 不整合はfixture側の問題としてテスト準備セッションで修正する方針、golden fixture 生成方針）。`実装詳細仕様書.md` §4.2・§6 を同方針で修正 |
 | 2026-07-17 | T-007 仕様再補正：§K.10 追加。実測調査により棚ありfixtureの`effective_volume`が`cdict["volume"]`と<1%一致しない構造的原因（入口面非対称性 約2.37%、棚ceilキャップによる上方空間喪失 約10.65%）を特定。`effective_volume()`の責務を近似・診断用に再定義し、DoDを直方体基準ケース（<1%維持）とcut・棚ケース（golden格子積分との一致、`cdict["volume"]`一致は不要）に分離。`実装詳細仕様書.md` §4.2・§6 を同方針で修正 |
 | 2026-07-17 | T-007 仕様追記：§K.7 にセル中心座標規約（`x_c[i]=inner_min_rel[0]+(i+0.5)*cell`等）・`nx`/`ny`算出式（T-006既存式を正式仕様化）・端数セルの面積補正なし方針・セル中心が`inner_max_rel`を超えないことの数学的証明を追記。T-006実装との矛盾なし。`実装詳細仕様書.md` §4.2 を同方針で修正 |
+| 2026-07-17 | T-012 計画中に発覚した不一致を訂正：§E に `spacing` が agent I/F に不在である旨を追記。§I-8 を新設し、コンテナ原点世界X（`offset_x`）の取得元を `i * spacing`（`init_states` に不在の値）ではなく `cdict["center"][0]`（`containers.py:61,66,238–240` により `center[0]==offset_x` が恒等的に成立）とする解決方針を記録。`実装詳細仕様書.md` §3.1/§4.2/§4.4・`初期検討_実装手順書.md` §1.2 を同方針で修正 |
