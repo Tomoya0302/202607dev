@@ -93,28 +93,67 @@ class RegimeParams:
     """レジーム判定と期待値計算のパラメータ。
 
     Attributes:
-        regime_threshold_n: この既配置数未満なら conservative（TODO(P0)）。
+        regime_threshold_n: この既配置数未満なら conservative（未確定。下記コメント参照）。
         gamma_cons: conservative レジームの指数。
         gamma_aggr: aggressive レジームの指数。
     """
 
-    regime_threshold_n: int = -1       # TODO(P0): evaluator.py の「一定数」を転記
+    # 未確定: README の「一定数以上積めないと fill 以外 0」に対応する具体的な閾値だが、
+    # 配布 evaluator.py にはこのロジック・数値が実装されていない（読解済み、interface_notes.md §I-2）。
+    # 推測で埋めず -1 のまま据え置き、運営照会中（interface_notes.md §J）。回答後に確定値へ更新する。
+    regime_threshold_n: int = -1
     gamma_cons: float = 4.0
     gamma_aggr: float = 1.0
 
 
-KIND_IS_SOFT: dict = {}                # TODO(P0): item_params.xlsx から転記
-POOL_MAX_WEIGHT: float = -1.0          # TODO(P0)
-OBS_KEYS: dict = {}                    # TODO(P0): observation/init のキー名転記表
+KIND_IS_SOFT: dict = {
+    # 出典: configs/item_params.xlsx（is_soft 行）。interface_notes.md §H 参照。
+    # 注意: ランタイムの item 辞書に kind フィールドは無く is_soft を直接持つ。
+    #       本表は学習データ合成・参照用（キー名は xlsx 列の英スラッグ化、暫定）。
+    "suitcase_large":  False,   # スーツケース(大)
+    "suitcase_medium": False,   # スーツケース(中)
+    "suitcase_small":  False,   # スーツケース(小)
+    "duffel_boston":   True,    # ダッフル/ボストン
+    "cardboard":       True,    # 段ボール
+    "backpack_large":  True,    # 大型リュックサック
+    "daypack_small":   True,    # 小型デイパック
+}
+
+POOL_MAX_WEIGHT: float = 18.0
+# 出典: item_params.xlsx 最大 mass（スーツケース(大)=18kg）。interface_notes.md §H 参照。
+# 評価基盤の実荷物は xlsx と別分布（README）のため、正規化に使う際は下流で [0,1] にクランプすること。
+
+OBS_KEYS: dict = {
+    # 出典: env.py / containers.py / items.py。interface_notes.md §E 参照。
+    "init_states": ["optimize", "lookahead_k", "container_list"],
+    "observation": ["optimize", "lookahead_k", "depth_map", "container_list", "pool_list"],
+    "observation_raw_shm": ["shm_name", "shm_shape", "shm_dtype"],  # runner 復元前の生observation
+    "container": [
+        "index", "length", "width", "height", "cut_x", "cut_y", "thickness",
+        "center", "n_vecs", "points", "volume", "shelf", "is_prioritized", "packed_items",
+    ],
+    "item": [
+        "index", "length", "width", "height", "mass", "is_prioritized", "is_soft",
+        "belongs_to", "pos", "orn", "lateralFriction", "rollingFriction",
+        "spinningFriction", "restitution", "angularDamping",
+    ],
+    "item_soft_extra": ["contactStiffness", "contactDamping", "linearDamping"],  # is_soft=True のみ付与
+    "action": ["item_idx", "container_idx", "place_pos", "orientation"],
+}
 
 ASSUMPTIONS = {
     # id: {"claim": str, "status": "unconfirmed|confirmed|rejected", "ref": "Q番号/根拠"}
-    "A9":  {"claim": "quat は (x,y,z,w)", "status": "unconfirmed", "ref": "interface_notes"},
+    "A9":  {"claim": "quat は (x,y,z,w)", "status": "confirmed",
+            "ref": "T-002 interface_notes.md §E; README:280, items.py, validator.py:181"},
     "A10": {"claim": "pos は幾何中心", "status": "unconfirmed", "ref": "T-004 fixture"},
-    "A11": {"claim": "item_idx はプール内 index", "status": "unconfirmed", "ref": "env.py"},
+    "A11": {"claim": "item_idx はプール内 index（消費で縮小）", "status": "confirmed",
+            "ref": "T-002 interface_notes.md §F; env.py:209, items.py:218, README:297,304"},
     "A12": {"claim": "入口レーン x は公式定義に従う", "status": "unconfirmed", "ref": "T-016"},
     "A13": {"claim": "orientation 表は §3.2", "status": "unconfirmed", "ref": "T-004"},
-    "A14": {"claim": "inclusion_margin は緩和方向", "status": "unconfirmed", "ref": "読解"},
+    "A14": {"claim": ("inclusion_margin は符号付きマージン: 正で緩和（はみ出し許容）／"
+                       "負で厳格（内側クリアランス要求）。-0.005 は内側5mm必須の意"),
+            "status": "confirmed",
+            "ref": "T-002 interface_notes.md §C; validator.py:78, evaluator.py:56, utils.py:207"},
 }
 
 

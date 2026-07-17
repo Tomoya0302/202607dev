@@ -58,10 +58,56 @@ def test_regime_params_defaults():
     assert rp.gamma_aggr == 1.0
 
 
-def test_todo_placeholders():
-    assert constants.KIND_IS_SOFT == {}
-    assert constants.POOL_MAX_WEIGHT == -1.0
-    assert constants.OBS_KEYS == {}
+def test_kind_is_soft_transcribed():
+    # T-002: docs/interface_notes.md §H の転記表を根拠に検証する（configs/item_params.xlsx の is_soft 行）。
+    assert constants.KIND_IS_SOFT == {
+        "suitcase_large": False,
+        "suitcase_medium": False,
+        "suitcase_small": False,
+        "duffel_boston": True,
+        "cardboard": True,
+        "backpack_large": True,
+        "daypack_small": True,
+    }
+
+
+def test_pool_max_weight_transcribed():
+    # T-002: docs/interface_notes.md §H の転記表を根拠に検証する（xlsx 最大 mass = スーツケース(大)=18kg）。
+    assert constants.POOL_MAX_WEIGHT == 18.0
+
+
+def test_obs_keys_transcribed():
+    # T-002: docs/interface_notes.md §E の転記表を根拠に検証する（constants.py実装からの転記ではない）。
+    # OBS_KEYS のトップレベル区分は転記表の行に1:1対応。
+    assert set(constants.OBS_KEYS.keys()) == {
+        "init_states", "observation", "observation_raw_shm",
+        "container", "item", "item_soft_extra", "action",
+    }
+
+    # 各区分内のキー列挙順は「dictのキー集合」であり仕様上の意味を持たないため set 比較。
+    assert set(constants.OBS_KEYS["init_states"]) == {"optimize", "lookahead_k", "container_list"}
+    assert set(constants.OBS_KEYS["observation"]) == {
+        "optimize", "lookahead_k", "depth_map", "container_list", "pool_list",
+    }
+    assert set(constants.OBS_KEYS["observation_raw_shm"]) == {"shm_name", "shm_shape", "shm_dtype"}
+    assert set(constants.OBS_KEYS["container"]) == {
+        "index", "length", "width", "height", "cut_x", "cut_y", "thickness",
+        "center", "n_vecs", "points", "volume", "shelf", "is_prioritized", "packed_items",
+    }
+    assert set(constants.OBS_KEYS["item"]) == {
+        "index", "length", "width", "height", "mass", "is_prioritized", "is_soft",
+        "belongs_to", "pos", "orn", "lateralFriction", "rollingFriction",
+        "spinningFriction", "restitution", "angularDamping",
+    }
+    assert set(constants.OBS_KEYS["item_soft_extra"]) == {
+        "contactStiffness", "contactDamping", "linearDamping",
+    }
+
+    # action は §3.4 make_action(item_idx, container_idx, pos_rel, orientation) の引数順と
+    # 一致させて順序管理しているため、リスト一致（順序固定）で検証する。
+    assert constants.OBS_KEYS["action"] == [
+        "item_idx", "container_idx", "place_pos", "orientation",
+    ]
 
 
 def test_placement_params_is_frozen():
@@ -70,21 +116,36 @@ def test_placement_params_is_frozen():
         pp.safety_margin = 0.02
 
 
-def test_assumptions_key_set_and_initial_status():
-    # §3.6 / 付録C: 仮定台帳のキーはちょうど A9..A14 で、初期状態はすべて unconfirmed。
+def test_assumptions_key_set_and_status_after_t002():
+    # §3.6 / 付録C: 仮定台帳のキーはちょうど A9..A14。
+    # T-002（docs/interface_notes.md 読解）により A9/A11/A14 は confirmed。
+    # A10=T-004 fixture／A12=T-016 移植／A13=T-003 公式突合 で確認予定のため unconfirmed のまま。
     assert set(constants.ASSUMPTIONS.keys()) == {"A9", "A10", "A11", "A12", "A13", "A14"}
+    expected_status = {
+        "A9": "confirmed",
+        "A10": "unconfirmed",
+        "A11": "confirmed",
+        "A12": "unconfirmed",
+        "A13": "unconfirmed",
+        "A14": "confirmed",
+    }
     for aid, entry in constants.ASSUMPTIONS.items():
         assert set(entry.keys()) == {"claim", "status", "ref"}
-        assert entry["status"] == "unconfirmed", f"{aid} は初期状態で unconfirmed であるべき"
+        assert entry["status"] == expected_status[aid], f"{aid} status mismatch"
 
 
 def test_assert_confirmed_no_args_does_not_raise():
     constants.assert_confirmed()
 
 
+def test_assert_confirmed_passes_for_confirmed_assumptions():
+    # T-002 で confirmed 化された A9/A11/A14 は例外を出さない。
+    constants.assert_confirmed("A9", "A11", "A14")
+
+
 def test_assert_confirmed_raises_for_unconfirmed_assumption():
     with pytest.raises(RuntimeError):
-        constants.assert_confirmed("A9")
+        constants.assert_confirmed("A10")  # T-002時点で未確定（T-004 fixture待ち）
 
 
 def test_assert_confirmed_raises_for_unknown_id():
