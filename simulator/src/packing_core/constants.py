@@ -60,9 +60,12 @@ class StageParams:
 
     Attributes:
         l_path_top_m: L字判定に回す上位候補数。
+        ems_top_n_per_container: build_state が各コンテナごとに select_topn へ渡すEMS予算
+            （T-012確定。コンテナ単位の値であり、全コンテナ合計ではない）。
     """
 
     l_path_top_m: int = 64
+    ems_top_n_per_container: int = 80
 
 
 @dataclass(frozen=True)

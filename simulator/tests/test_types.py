@@ -37,7 +37,10 @@ def test_grid_params_defaults():
 
 
 def test_stage_params_defaults():
-    assert constants.StageParams().l_path_top_m == 64
+    sp = constants.StageParams()
+    assert sp.l_path_top_m == 64
+    # T-012確定: 各コンテナの select_topn 予算（実装詳細仕様書 §3.5/付録C）。
+    assert sp.ems_top_n_per_container == 80
 
 
 def test_score_params_defaults():
@@ -172,6 +175,20 @@ def test_item_spec_fields_and_frozen():
     assert item.is_priority is True
     with pytest.raises(dataclasses.FrozenInstanceError):
         item.weight = 99.0
+
+
+def test_item_spec_kind_accepts_none():
+    # T-012確定: 公式observationにkind相当キーは無いため、build_state経由では常にNone
+    # （実装詳細仕様書 §3.3/§4.4、interface_notes.md §H）。ItemSpec.kind は str | None。
+    item = ItemSpec(
+        idx=0,
+        size=np.array([0.5, 0.4, 0.3], dtype=np.float64),
+        weight=1.0,
+        kind=None,
+        is_soft=False,
+        is_priority=False,
+    )
+    assert item.kind is None
 
 
 def test_placed_item_fields_and_frozen():

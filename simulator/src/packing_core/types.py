@@ -14,7 +14,10 @@ class ItemSpec:
         idx: プール内 index（仮定 A11: policy の item_idx はこの値）。
         size: 回転前 (L, W, H) [m]。shape (3,), float64。
         weight: 重量 [kg]。
-        kind: item_params.xlsx 由来の種別キー。
+        kind: item_params.xlsx 由来の種別キー。公式 observation に kind 相当キーは
+            存在しないため（interface_notes.md §H）、`state.build_state` が observation
+            から構築する場合は常に None。提出時のランタイム方策は kind に依存せず、
+            種別相当の特徴量は is_soft/is_priority を使う（実装詳細仕様書 §3.3/§4.4）。
         is_soft: 種別→bool 変換は `constants.KIND_IS_SOFT` を参照。
         is_priority: 優先荷物かどうか。
     """
@@ -22,7 +25,7 @@ class ItemSpec:
     idx: int
     size: Vec3
     weight: float
-    kind: str
+    kind: str | None
     is_soft: bool
     is_priority: bool
 
