@@ -1,9 +1,9 @@
-"""空き空間候補（EMS: Empty Maximal Space）。詳細仕様書 §4.3（T-009: 全再構築）。
+"""空き空間候補（EMS: Empty Maximal Space）。詳細仕様書 §4.3（T-009: 全再構築、T-010: 差分更新）。
 
-本チケット（T-009）では `generate_ems`（有効空間AABBからの全再構築）と、その内部でのみ
-使用する分割・重複/内包除去のprivate helperのみを実装する。`update_ems`（T-010の差分更新、
-公開API）・`prune_min_dim`／`select_topn`／`normalize_descriptors`（T-011の上位選択・
-正規化・打切り率）はスコープ外であり、本ファイルには含まない。
+本ファイルは `generate_ems`（全再構築）・`update_ems`（差分更新）・`remove_contained`
+（重複/完全内包除去）の3公開APIと、その内部でのみ使用する6面切断のprivate helperを実装する。
+`prune_min_dim`／`select_topn`／`normalize_descriptors`（T-011の上位選択・正規化・打切り率）は
+スコープ外であり、本ファイルには含まない。
 """
 import numpy as np
 
@@ -46,18 +46,21 @@ def _split_ems_by_obstacle(ems: EMSBox, obstacle_min: Vec3, obstacle_max: Vec3) 
     return [box for box in subs if np.all(box.max_rel - box.min_rel > EPS_GEOM)]
 
 
-def _remove_duplicate_or_contained(ems_list: list[EMSBox]) -> list[EMSBox]:
-    """重複・他のEMSに完全内包されるEMSを除去する（詳細仕様書 §4.3 T-009節）。
+def remove_contained(ems_list: list[EMSBox]) -> list[EMSBox]:
+    """重複・他のEMSに完全内包されるEMSを除去する（詳細仕様書 §4.3、公開API）。
 
     `geometry.aabb_contains`（境界一致を含む判定、margin=0.0）で他のEMSに完全に収まる
     EMSを除去する。境界が完全に一致する組（相互内包）は `ems_list` 内で最も早く現れた
-    ものだけを残す（同順位の重複を両方除去してしまわないための tie-break）。
+    ものだけを残す（同順位の重複を両方除去してしまわないための tie-break）。非内包の
+    EMSはすべて保持する。入力リスト・入力EMS自体はいずれも変更しない（`EMSBox` は
+    `frozen=True` のため要素側は元々不変。新規リストのみを構築して返す）。
 
     Args:
         ems_list: 重複・内包チェック対象のEMSリスト。
 
     Returns:
-        重複・内包を除いたEMSのリスト（元の順序を維持）。
+        重複・内包を除いたEMSのリスト。出力順は入力順を基準に決定的（除去されなかった
+        要素を入力に現れた順のまま並べる）。
     """
     result: list[EMSBox] = []
     for i, box in enumerate(ems_list):
@@ -85,6 +88,47 @@ def _remove_duplicate_or_contained(ems_list: list[EMSBox]) -> list[EMSBox]:
     return result
 
 
+def update_ems(
+    ems_list: list[EMSBox],
+    obstacle: tuple[Vec3, Vec3],
+    space: ContainerSpace,
+) -> list[EMSBox]:
+    """1個の障害物を適用してEMS集合を差分更新する（詳細仕様書 §4.3 T-010節）。
+
+    `ems_list` の各要素を `_split_ems_by_obstacle` に通す（障害物と交差しない要素は
+    そのまま1個保持され、交差する要素は6面切断のうち正体積の部分箱だけに置き換わる）。
+    続けて `space.inner_min_rel`/`inner_max_rel` の内側に完全に収まらない部分箱を除去し
+    （`geometry.aabb_contains`、margin=0.0、境界一致は内側扱い）、最後に `remove_contained`
+    で重複・完全内包されたEMSを除去する。`prune_min_dim` 以降（T-011）は行わない。
+
+    `ems_list` 自体は読み取りのみで変更しない（新規リストを構築して返す）。
+
+    Args:
+        ems_list: 更新対象のEMSリスト。
+        obstacle: 障害物AABB（コンテナ相対）の `(min, max)`。
+        space: 対象コンテナの `ContainerSpace`（内壁包含チェックに使用）。
+
+    Returns:
+        差分更新後の正体積・内壁内・相互非内包な `EMSBox` のリスト。
+    """
+    obstacle_min = np.asarray(obstacle[0], dtype=np.float64)
+    obstacle_max = np.asarray(obstacle[1], dtype=np.float64)
+
+    next_ems_list: list[EMSBox] = []
+    for ems in ems_list:
+        next_ems_list.extend(_split_ems_by_obstacle(ems, obstacle_min, obstacle_max))
+
+    inner_min = space.inner_min_rel
+    inner_max = space.inner_max_rel
+    next_ems_list = [
+        box
+        for box in next_ems_list
+        if geometry.aabb_contains(inner_min, inner_max, box.min_rel, box.max_rel, margin=0.0)
+    ]
+
+    return remove_contained(next_ems_list)
+
+
 def generate_ems(
     space: ContainerSpace,
     placed_aabbs: list[tuple[Vec3, Vec3]],
@@ -92,10 +136,8 @@ def generate_ems(
     """有効空間AABBから EMS (Empty Maximal Space) を全再構築する（詳細仕様書 §4.3 T-009節）。
 
     `space.inner_min_rel`/`inner_max_rel` を初期EMSとし、`placed_aabbs` と
-    `space.shelf_boxes` を区別せず障害物として順に適用する。障害物ごとに現在のEMS集合の
-    各要素を `_split_ems_by_obstacle` で分割し、`_remove_duplicate_or_contained` で
-    重複・完全内包されたEMSを除去する（T-010の差分更新用 `update_ems` 公開APIと
-    T-011の `prune_min_dim`／`select_topn`／`normalize_descriptors` はスコープ外）。
+    `space.shelf_boxes` を区別せず障害物として順に `update_ems` を適用する
+    （T-011の `prune_min_dim`／`select_topn`／`normalize_descriptors` はスコープ外）。
 
     Args:
         space: 対象コンテナの `ContainerSpace`。
@@ -111,13 +153,7 @@ def generate_ems(
 
     obstacles = list(placed_aabbs) + list(space.shelf_boxes)
     for obstacle_min, obstacle_max in obstacles:
-        obstacle_min = np.asarray(obstacle_min, dtype=np.float64)
-        obstacle_max = np.asarray(obstacle_max, dtype=np.float64)
-
-        next_ems_list: list[EMSBox] = []
-        for ems in ems_list:
-            next_ems_list.extend(_split_ems_by_obstacle(ems, obstacle_min, obstacle_max))
-        ems_list = _remove_duplicate_or_contained(next_ems_list)
+        ems_list = update_ems(ems_list, (obstacle_min, obstacle_max), space)
 
     ems_list.sort(key=lambda box: tuple(box.min_rel) + tuple(box.max_rel))
     return ems_list
