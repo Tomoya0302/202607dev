@@ -1,21 +1,22 @@
-"""T-009/T-010: packing_core.ems の全再構築・差分更新検証
-（詳細仕様書 §2・§3・§4.3・§6 T-009/T-010。依存: T-005 geometry AABB系、T-007 cut/棚対応）。
+"""T-009/T-010/T-011: packing_core.ems の全再構築・差分更新・上位選択/正規化/打切り率検証
+（詳細仕様書 §2・§3・§4.3・§6 T-009〜T-011。依存: T-005 geometry AABB系、T-007 cut/棚対応）。
 
-ems.py は T-010時点で `update_ems`／`remove_contained` が未実装のため、
+ems.py は T-011時点で `prune_min_dim`／`select_topn`／`normalize_descriptors` が未実装のため、
 収集(--collect-only)を成功させるべく各テスト関数の内部で対象モジュールを
 import する（モジュール直下 import は禁止、test_geometry.py・test_container_space.py
-と同方針）。
+と同方針）。T-011の3関数を呼び出すテストは、実装が入るまで `AttributeError` で失敗する
+（意図した「未実装起因の失敗」であり、テスト自体の不備ではない）。
 
-本ファイルは T-009（generate_ems の全再構築、既知3EMSケース）と T-010（update_ems の
-6面切断・remove_contained 公開API・全再構築との一致性質テスト）を対象とする。
-T-011（select_topn/normalize_descriptors/打切り率/prune_min_dim）のテストは含めない
-（update_ems は `remove_contained` までを行い、`prune_min_dim` は呼ばない）。
+本ファイルは T-009（generate_ems の全再構築、既知3EMSケース）・T-010（update_ems の
+6面切断・remove_contained 公開API・全再構築との一致性質テスト）・T-011（prune_min_dim の
+3軸判定、select_topn の並び順（z1昇順→体積降順→座標タイブレーク）・打切り率・空入力／
+n_per_container<=0、normalize_descriptors の軸別正規化・空入力・ゼロ幅軸）を対象とする。
 """
 import numpy as np
 import pytest
 
 from src.packing_core import constants, geometry
-from src.packing_core.container_space import build_container_space
+from src.packing_core.container_space import ContainerSpace, build_container_space
 
 ROUND_NDIGITS = 6
 
@@ -452,3 +453,472 @@ def test_update_ems_sequential_matches_generate_ems_full_rebuild():
                 assert not geometry.aabb_intersects(
                     box.min_rel, box.max_rel, obstacle_min, obstacle_max, tol=0.0
                 ), f"seed={seed}"
+
+
+# =====================================================================================
+# T-011: prune_min_dim / select_topn / normalize_descriptors
+#
+# 決定事項（人間承認済み、2026-07-17）:
+#   * select_topn の同順位タイブレーク: (min_rel[2], -volume(), min_rel[0], min_rel[1],
+#     max_rel[0], max_rel[1], max_rel[2]) の辞書式昇順。
+#   * 打切り率 = discarded_count / valid_ems_count。valid_ems_count==0（空入力）のときは
+#     0.0（切り捨て対象が存在しないため）。
+#   * n_per_container < 0 は ValueError。n_per_container == 0 は空リスト入力に対応する
+#     打切り率（非空入力→1.0、空入力→0.0）。
+#   * normalize_descriptors はコンテナ内壁のいずれかの軸幅（inner_max_rel-inner_min_rel）
+#     が EPS_GEOM 以下なら ValueError（0除算を np.clip 等で隠さない）。
+# =====================================================================================
+
+def _container_space_with_inner_bounds(
+    inner_min_rel: np.ndarray, inner_max_rel: np.ndarray
+) -> ContainerSpace:
+    """normalize_descriptors 専用: inner_min_rel/inner_max_rel だけを指定した最小 ContainerSpace。
+
+    normalize_descriptors は inner_min_rel/inner_max_rel のみを参照する契約のため、
+    他フィールド（cut_planes/shelf_boxes/floor_z 等）はダミー値で埋める
+    （本ファイル専用、他所非依存）。
+    """
+    dummy_grid = np.zeros((1, 1), dtype=np.float64)
+    return ContainerSpace(
+        index=0,
+        offset_x=0.0,
+        inner_min_rel=np.asarray(inner_min_rel, dtype=np.float64),
+        inner_max_rel=np.asarray(inner_max_rel, dtype=np.float64),
+        cut_planes=[],
+        shelf_boxes=[],
+        cell=CELL,
+        floor_z=dummy_grid,
+        ceil_z=dummy_grid,
+        height=dummy_grid,
+    )
+
+
+# --- prune_min_dim: 各軸が min_dim 以上のEMSだけが残る -------------------------------
+
+def test_prune_min_dim_keeps_only_boxes_meeting_min_dim_on_all_axes():
+    """各軸の寸法が min_dim 以上（境界=min_dimと等しい場合を含む）のEMSだけが残る。"""
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    min_dim = np.array([0.3, 0.3, 0.3], dtype=np.float64)
+    keep_exact = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        max_rel=np.array([0.3, 0.5, 0.4], dtype=np.float64),
+    )  # x寸法がちょうど min_dim（境界は残す側）
+    keep_large = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        max_rel=np.array([0.6, 0.6, 0.6], dtype=np.float64),
+    )
+    fail_x = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        max_rel=np.array([0.2, 0.5, 0.4], dtype=np.float64),
+    )
+    fail_y = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        max_rel=np.array([0.5, 0.2, 0.4], dtype=np.float64),
+    )
+    fail_z = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        max_rel=np.array([0.5, 0.5, 0.2], dtype=np.float64),
+    )
+
+    result = ems.prune_min_dim([keep_exact, keep_large, fail_x, fail_y, fail_z], min_dim)
+
+    assert _rounded_box_set(result) == {
+        _round_bounds(keep_exact.min_rel, keep_exact.max_rel),
+        _round_bounds(keep_large.min_rel, keep_large.max_rel),
+    }
+
+
+def test_prune_min_dim_excludes_box_failing_on_any_single_axis():
+    """1軸でも min_dim を下回れば、他の軸が十分でもEMSは除外される。"""
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    min_dim = np.array([0.3, 0.3, 0.3], dtype=np.float64)
+    fail_x = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([0.29, 1.0, 1.0])
+    )
+    fail_y = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([1.0, 0.29, 1.0])
+    )
+    fail_z = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([1.0, 1.0, 0.29])
+    )
+
+    result = ems.prune_min_dim([fail_x, fail_y, fail_z], min_dim)
+
+    assert result == []
+
+
+def test_prune_min_dim_is_order_independent():
+    """出力（残る集合）は入力の並び順に依存しない。"""
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    min_dim = np.array([0.3, 0.3, 0.3], dtype=np.float64)
+    keep = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([0.6, 0.6, 0.6])
+    )
+    fail = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([0.1, 0.6, 0.6])
+    )
+    boxes = [keep, fail]
+
+    forward = ems.prune_min_dim(boxes, min_dim)
+    backward = ems.prune_min_dim(list(reversed(boxes)), min_dim)
+
+    expected = {_round_bounds(keep.min_rel, keep.max_rel)}
+    assert _rounded_box_set(forward) == expected
+    assert _rounded_box_set(backward) == expected
+
+
+def test_prune_min_dim_does_not_mutate_input_list():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    min_dim = np.array([0.3, 0.3, 0.3], dtype=np.float64)
+    keep = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([0.6, 0.6, 0.6])
+    )
+    fail = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([0.1, 0.6, 0.6])
+    )
+    boxes = [keep, fail]
+    before = _rounded_box_set(boxes)
+
+    ems.prune_min_dim(boxes, min_dim)
+
+    assert len(boxes) == 2
+    assert _rounded_box_set(boxes) == before
+
+
+# --- select_topn: 並び順（z1昇順→体積降順→座標タイブレーク） ------------------------
+
+def test_select_topn_orders_by_z1_ascending():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    low_z = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.1], dtype=np.float64),
+        max_rel=np.array([1.0, 1.0, 0.5], dtype=np.float64),
+    )
+    mid_z = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.3], dtype=np.float64),
+        max_rel=np.array([1.0, 1.0, 0.6], dtype=np.float64),
+    )
+    high_z = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.5], dtype=np.float64),
+        max_rel=np.array([1.0, 1.0, 0.9], dtype=np.float64),
+    )
+
+    result, rate = ems.select_topn([high_z, low_z, mid_z], n_per_container=3)
+
+    assert [round(float(box.min_rel[2]), 6) for box in result] == [0.1, 0.3, 0.5]
+    assert rate == pytest.approx(0.0)
+
+
+def test_select_topn_orders_by_volume_descending_when_z1_ties():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    small = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([0.5, 0.5, 0.5])
+    )  # volume 0.125
+    large = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([1.0, 1.0, 1.0])
+    )  # volume 1.0
+    medium = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([0.8, 0.8, 0.8])
+    )  # volume 0.512
+
+    result, rate = ems.select_topn([small, large, medium], n_per_container=3)
+
+    assert [round(box.volume(), 6) for box in result] == [1.0, 0.512, 0.125]
+    assert rate == pytest.approx(0.0)
+
+
+def test_select_topn_coordinate_tiebreak_uses_min_x_when_z1_and_volume_tie():
+    """z1・体積が同じ場合、次点キー min_rel[0] の昇順で決定的に並べる。"""
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    box_a = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        max_rel=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+    )
+    box_b = EMSBox(
+        min_rel=np.array([1.0, 0.0, 0.0], dtype=np.float64),
+        max_rel=np.array([2.0, 1.0, 1.0], dtype=np.float64),
+    )
+    box_c = EMSBox(
+        min_rel=np.array([2.0, 0.0, 0.0], dtype=np.float64),
+        max_rel=np.array([3.0, 1.0, 1.0], dtype=np.float64),
+    )
+
+    result, rate = ems.select_topn([box_c, box_a, box_b], n_per_container=3)
+
+    assert [float(box.min_rel[0]) for box in result] == [0.0, 1.0, 2.0]
+    assert rate == pytest.approx(0.0)
+
+
+def test_select_topn_coordinate_tiebreak_uses_min_y_when_min_x_also_ties():
+    """z1・体積・min_x が同じ場合、次点キー min_rel[1] の昇順で決定的に並べる。"""
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    box_a = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        max_rel=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+    )
+    box_b = EMSBox(
+        min_rel=np.array([0.0, 1.0, 0.0], dtype=np.float64),
+        max_rel=np.array([1.0, 2.0, 1.0], dtype=np.float64),
+    )
+    box_c = EMSBox(
+        min_rel=np.array([0.0, 2.0, 0.0], dtype=np.float64),
+        max_rel=np.array([1.0, 3.0, 1.0], dtype=np.float64),
+    )
+
+    result, rate = ems.select_topn([box_c, box_a, box_b], n_per_container=3)
+
+    assert [float(box.min_rel[1]) for box in result] == [0.0, 1.0, 2.0]
+    assert rate == pytest.approx(0.0)
+
+
+# --- select_topn: 打切り（N未満のときだけ切り捨て、打切り率=discarded/valid） ------------
+
+def test_select_topn_truncates_only_when_more_than_n_available():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    boxes = [
+        EMSBox(
+            min_rel=np.array([0.0, 0.0, float(i)], dtype=np.float64),
+            max_rel=np.array([1.0, 1.0, float(i) + 0.5], dtype=np.float64),
+        )
+        for i in range(5)
+    ]  # z1 = 0,1,2,3,4 と相異なるため体積タイブレークは発生しない
+
+    result, rate = ems.select_topn(boxes, n_per_container=2)
+
+    assert len(result) == 2
+    assert [float(box.min_rel[2]) for box in result] == [0.0, 1.0]
+    assert rate == pytest.approx((5 - 2) / 5)
+
+
+def test_select_topn_zero_truncation_rate_when_n_covers_all():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    boxes = [
+        EMSBox(
+            min_rel=np.array([0.0, 0.0, float(i)], dtype=np.float64),
+            max_rel=np.array([1.0, 1.0, float(i) + 0.5], dtype=np.float64),
+        )
+        for i in range(3)
+    ]
+
+    result, rate = ems.select_topn(boxes, n_per_container=10)  # N が全件数以上
+
+    assert len(result) == 3
+    assert rate == pytest.approx(0.0)
+
+
+# --- select_topn: 空入力・n_per_container<=0 -----------------------------------------
+
+def test_select_topn_empty_input_returns_empty_with_zero_rate():
+    from src.packing_core import ems
+
+    result, rate = ems.select_topn([], n_per_container=5)
+
+    assert result == []
+    assert rate == pytest.approx(0.0)
+
+
+def test_select_topn_zero_n_with_nonempty_input_returns_empty_and_full_truncation_rate():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    boxes = [
+        EMSBox(
+            min_rel=np.zeros(3, dtype=np.float64),
+            max_rel=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+        )
+    ]
+
+    result, rate = ems.select_topn(boxes, n_per_container=0)
+
+    assert result == []
+    assert rate == pytest.approx(1.0)
+
+
+def test_select_topn_zero_n_with_empty_input_returns_empty_and_zero_rate():
+    from src.packing_core import ems
+
+    result, rate = ems.select_topn([], n_per_container=0)
+
+    assert result == []
+    assert rate == pytest.approx(0.0)
+
+
+def test_select_topn_negative_n_raises_value_error():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    boxes = [
+        EMSBox(
+            min_rel=np.zeros(3, dtype=np.float64),
+            max_rel=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+        )
+    ]
+
+    with pytest.raises(ValueError):
+        ems.select_topn(boxes, n_per_container=-1)
+
+
+def test_select_topn_does_not_mutate_input_list():
+    """select_topn は並び替えた新規リストを返し、入力リスト自体の順序は変えない。"""
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    box_a = EMSBox(
+        min_rel=np.zeros(3, dtype=np.float64),
+        max_rel=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+    )
+    box_b = EMSBox(
+        min_rel=np.array([0.0, 0.0, 1.0], dtype=np.float64),
+        max_rel=np.array([1.0, 1.0, 2.0], dtype=np.float64),
+    )
+    boxes = [box_b, box_a]  # 入力順は z1 降順（sort後の期待順とは逆）
+    before_ids = [id(b) for b in boxes]
+
+    ems.select_topn(boxes, n_per_container=1)
+
+    assert [id(b) for b in boxes] == before_ids
+    assert boxes[0] is box_b and boxes[1] is box_a
+
+
+# --- normalize_descriptors: shape・軸別正規化・空入力・dtype・非破壊 -------------------
+
+def test_normalize_descriptors_shape_and_dtype():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    space = _empty_space()
+    boxes = [
+        EMSBox(min_rel=INNER_MIN_REL.copy(), max_rel=INNER_MAX_REL.copy()),
+        EMSBox(
+            min_rel=np.array([0.5, 0.5, 0.5], dtype=np.float64),
+            max_rel=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+        ),
+    ]
+
+    result = ems.normalize_descriptors(boxes, space)
+
+    assert result.shape == (2, 6)
+    assert result.dtype == np.float64
+
+
+def test_normalize_descriptors_inner_min_maps_to_zero():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    space = _empty_space()
+    box = EMSBox(
+        min_rel=INNER_MIN_REL.copy(),
+        max_rel=np.array([0.5, 0.5, 0.5], dtype=np.float64),
+    )
+
+    result = ems.normalize_descriptors([box], space)
+
+    np.testing.assert_allclose(result[0, 0:3], [0.0, 0.0, 0.0], atol=1e-9)
+
+
+def test_normalize_descriptors_inner_max_maps_to_one():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    space = _empty_space()
+    box = EMSBox(
+        min_rel=np.array([1.0, 1.5, 1.0], dtype=np.float64),
+        max_rel=INNER_MAX_REL.copy(),
+    )
+
+    result = ems.normalize_descriptors([box], space)
+
+    np.testing.assert_allclose(result[0, 3:6], [1.0, 1.0, 1.0], atol=1e-9)
+
+
+def test_normalize_descriptors_axes_are_normalized_independently():
+    """内壁が非立方体(1.5x2.0x1.6)であることを利用し、軸ごとに異なる係数（内壁スパン）で
+    正規化されることを確認する（コンテナ外寸や単一係数の流用を検出する）。
+    """
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    space = _empty_space()
+    box = EMSBox(
+        min_rel=np.array([0.5, 0.5, 0.5], dtype=np.float64),
+        max_rel=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+    )
+
+    result = ems.normalize_descriptors([box], space)
+
+    expected_min = [0.5 / 1.5, 0.5 / 2.0, 0.5 / 1.6]
+    expected_max = [1.0 / 1.5, 1.0 / 2.0, 1.0 / 1.6]
+    np.testing.assert_allclose(result[0, 0:3], expected_min, atol=1e-9)
+    np.testing.assert_allclose(result[0, 3:6], expected_max, atol=1e-9)
+
+
+def test_normalize_descriptors_empty_list_shape():
+    from src.packing_core import ems
+
+    space = _empty_space()
+
+    result = ems.normalize_descriptors([], space)
+
+    assert result.shape == (0, 6)
+    assert result.dtype == np.float64
+
+
+def test_normalize_descriptors_does_not_mutate_inputs():
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    space = _empty_space()
+    box = EMSBox(
+        min_rel=np.array([0.5, 0.5, 0.5], dtype=np.float64),
+        max_rel=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+    )
+    boxes = [box]
+    min_before = box.min_rel.copy()
+    max_before = box.max_rel.copy()
+    inner_min_before = space.inner_min_rel.copy()
+    inner_max_before = space.inner_max_rel.copy()
+
+    ems.normalize_descriptors(boxes, space)
+
+    np.testing.assert_array_equal(box.min_rel, min_before)
+    np.testing.assert_array_equal(box.max_rel, max_before)
+    np.testing.assert_array_equal(space.inner_min_rel, inner_min_before)
+    np.testing.assert_array_equal(space.inner_max_rel, inner_max_before)
+    assert len(boxes) == 1 and boxes[0] is box
+
+
+def test_normalize_descriptors_raises_on_zero_width_container_axis():
+    """内壁のいずれかの軸幅が0（縮退）の場合、0除算を隠さず ValueError を送出する。"""
+    from src.packing_core import ems
+    from src.packing_core.types import EMSBox
+
+    degenerate_space = _container_space_with_inner_bounds(
+        inner_min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        inner_max_rel=np.array([0.0, 2.0, 1.6], dtype=np.float64),  # x幅=0
+    )
+    box = EMSBox(
+        min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        max_rel=np.array([0.0, 1.0, 1.0], dtype=np.float64),
+    )
+
+    with pytest.raises(ValueError):
+        ems.normalize_descriptors([box], degenerate_space)

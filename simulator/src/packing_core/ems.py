@@ -1,9 +1,10 @@
-"""空き空間候補（EMS: Empty Maximal Space）。詳細仕様書 §4.3（T-009: 全再構築、T-010: 差分更新）。
+"""空き空間候補（EMS: Empty Maximal Space）。詳細仕様書 §4.3
+（T-009: 全再構築、T-010: 差分更新、T-011: 上位選択・正規化・打切り率）。
 
 本ファイルは `generate_ems`（全再構築）・`update_ems`（差分更新）・`remove_contained`
-（重複/完全内包除去）の3公開APIと、その内部でのみ使用する6面切断のprivate helperを実装する。
-`prune_min_dim`／`select_topn`／`normalize_descriptors`（T-011の上位選択・正規化・打切り率）は
-スコープ外であり、本ファイルには含まない。
+（重複/完全内包除去）・`prune_min_dim`（min_dim未満のEMS除去）・`select_topn`
+（上位N選択・打切り率算出）・`normalize_descriptors`（[0,1]正規化記述子）の6公開APIと、
+その内部でのみ使用する6面切断のprivate helperを実装する。
 """
 import numpy as np
 
@@ -157,3 +158,105 @@ def generate_ems(
 
     ems_list.sort(key=lambda box: tuple(box.min_rel) + tuple(box.max_rel))
     return ems_list
+
+
+def prune_min_dim(ems_list: list[EMSBox], min_dim: Vec3) -> list[EMSBox]:
+    """各軸寸法が `min_dim` 未満のEMSを除去する（詳細仕様書 §4.3 T-011節）。
+
+    3軸すべての寸法（`max_rel - min_rel`）が対応する `min_dim` 以上の場合だけ残す
+    （1軸でも不足すれば除外、境界値と等しい場合は残す）。独自の許容誤差は追加しない。
+    入力リスト・EMS内部の配列はいずれも変更せず、新規リストのみを構築して返す。
+    出力順は入力順を維持する。
+
+    Args:
+        ems_list: 判定対象のEMSリスト。
+        min_dim: 各軸の最小寸法。shape (3,), float64。
+
+    Returns:
+        3軸すべてが `min_dim` 以上のEMSのみを入力順で含むリスト。
+    """
+    min_dim = np.asarray(min_dim, dtype=np.float64)
+    return [box for box in ems_list if np.all(box.max_rel - box.min_rel >= min_dim)]
+
+
+def select_topn(
+    ems_list: list[EMSBox], n_per_container: int
+) -> tuple[list[EMSBox], float]:
+    """決定的ソートキーでEMSを並べ替え、上位 `n_per_container` 件を選ぶ（詳細仕様書 §4.3 T-011節）。
+
+    ソートキーは `(min_z, -volume, min_x, min_y, max_x, max_y, max_z)` の辞書式昇順
+    （`min_z` 昇順→体積降順→座標タイブレーク）。入力リストは並べ替えず、ソート済みの
+    新規リストを返す。
+
+    打切り率は `discarded_count / valid_ems_count`（`valid_ems_count` は `ems_list` の件数）。
+    空入力は分母が0のため `0.0` とする。
+
+    Args:
+        ems_list: 選択対象のEMSリスト（`prune_min_dim` 済みを想定）。
+        n_per_container: コンテナ当たりの上位選択数。
+
+    Returns:
+        `(選択されたEMSのソート済みリスト, 打切り率)`。
+
+    Raises:
+        ValueError: `n_per_container` が負の場合。
+    """
+    if n_per_container < 0:
+        raise ValueError(f"n_per_container は0以上である必要があります: {n_per_container}")
+
+    valid_count = len(ems_list)
+    if valid_count == 0:
+        return [], 0.0
+    if n_per_container == 0:
+        return [], 1.0
+
+    sorted_ems = sorted(
+        ems_list,
+        key=lambda box: (
+            float(box.min_rel[2]),
+            -float(box.volume()),
+            float(box.min_rel[0]),
+            float(box.min_rel[1]),
+            float(box.max_rel[0]),
+            float(box.max_rel[1]),
+            float(box.max_rel[2]),
+        ),
+    )
+    selected = sorted_ems[:n_per_container]
+    discarded_count = valid_count - len(selected)
+    return selected, discarded_count / valid_count
+
+
+def normalize_descriptors(ems_list: list[EMSBox], space: ContainerSpace) -> np.ndarray:
+    """EMSを内壁基準で `[0, 1]` に正規化した記述子配列へ変換する（詳細仕様書 §4.3 T-011節）。
+
+    各EMSを `(min_x, min_y, min_z, max_x, max_y, max_z)` の順で6次元化し、各軸を
+    `(v - inner_min_rel[axis]) / (inner_max_rel[axis] - inner_min_rel[axis])` で独立に
+    正規化する（`np.clip` による丸めはしない）。入力EMS・`space` はいずれも変更しない。
+
+    Args:
+        ems_list: 正規化対象のEMSリスト。
+        space: 正規化基準となる内壁AABBを持つ `ContainerSpace`。
+
+    Returns:
+        shape `(N, 6)`、dtype `float64` の正規化記述子配列。空入力は shape `(0, 6)`。
+
+    Raises:
+        ValueError: `space` の内壁幅（`inner_max_rel - inner_min_rel`）のいずれかの軸が
+            `EPS_GEOM` 以下の場合。
+    """
+    inner_min = space.inner_min_rel
+    inner_max = space.inner_max_rel
+    width = inner_max - inner_min
+    if np.any(width <= EPS_GEOM):
+        raise ValueError(f"内壁幅がEPS_GEOM以下です: width={width}")
+
+    if not ems_list:
+        return np.zeros((0, 6), dtype=np.float64)
+
+    raw = np.array(
+        [np.concatenate([box.min_rel, box.max_rel]) for box in ems_list], dtype=np.float64
+    )
+    denom = np.concatenate([width, width])
+    origin = np.concatenate([inner_min, inner_min])
+    return (raw - origin) / denom
