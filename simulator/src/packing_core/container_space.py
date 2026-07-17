@@ -1,8 +1,8 @@
 """有効空間と格子（詳細仕様書 §4.2、T-006〜T-008）。
 
 本モジュールは cut・棚を含む有効空間（連続幾何）と絞り込み用格子を構築する（T-006: 直方体、
-T-007: cut plane と棚のAABBを反映した floor_z/ceil_z・contains_oriented_box 拡張）。
-`cells_of_aabb`、`bake_placed`、既配置荷物による `height` 更新は後続チケット（T-008）で追加する。
+T-007: cut plane と棚のAABBを反映した floor_z/ceil_z・contains_oriented_box 拡張、
+T-008: `cells_of_aabb` によるAABB→格子sliceの変換と `bake_placed` による `height` 全再構築）。
 """
 from dataclasses import dataclass
 
@@ -10,7 +10,7 @@ import numpy as np
 
 from src.packing_core import geometry
 from src.packing_core.constants import EPS_GEOM
-from src.packing_core.types import Vec3
+from src.packing_core.types import PlacedItem, Vec3
 
 
 @dataclass
@@ -366,3 +366,88 @@ def effective_volume(space: ContainerSpace) -> float:
         格子表現上の近似体積 [m^3]。
     """
     return float(np.sum(np.maximum(space.ceil_z - space.floor_z, 0.0)) * space.cell * space.cell)
+
+
+def cells_of_aabb(
+    space: ContainerSpace, bmin: Vec3, bmax: Vec3
+) -> tuple[slice, slice]:
+    """AABBのXY範囲を格子インデックスの `(x_slice, y_slice)` へ変換する（詳細仕様書 §4.2 T-008節）。
+
+    セルはセル中心（`_cell_centers` と同一の生成式）で代表し、半開区間
+    `bmin[k] <= center < bmax[k]`（下端を含み上端を含まない）を満たすセルを選ぶ。
+    2つのAABBが同一平面で面接触し、境界がちょうどセル中心と一致する場合、境界セルは
+    `bmax` 側のAABBにのみ帰属し、重複帰属しない。
+
+    XY範囲は先にコンテナ内壁のXY範囲へclampし、`EPS_GEOM` によるセル占有範囲の外側拡張は
+    行わない。clamp後にいずれかの軸で正の幅を持たない場合、および `searchsorted` 後の
+    インデックスがいずれかの軸で `start >= stop` となる場合は、canonicalな空表現
+    `(slice(0, 0), slice(0, 0))` を返す（片方の軸だけ実範囲を残さない）。
+
+    Args:
+        space: 対象コンテナの `ContainerSpace`。
+        bmin: AABBの最小点（コンテナ相対）。shape (3,), float64。
+        bmax: AABBの最大点（コンテナ相対）。shape (3,), float64。
+
+    Returns:
+        `(x_slice, y_slice)`。交差なし・空範囲の場合は `(slice(0, 0), slice(0, 0))`。
+
+    Raises:
+        ValueError: `bmin`/`bmax` が shape (3,) でない場合、有限値でない要素を含む場合、
+            またはいずれかの軸で `bmax[k] < bmin[k] - EPS_GEOM` となる場合。
+    """
+    bmin = np.asarray(bmin, dtype=np.float64)
+    bmax = np.asarray(bmax, dtype=np.float64)
+
+    if bmin.shape != (3,) or bmax.shape != (3,):
+        raise ValueError(
+            f"bmin/bmax は shape (3,) である必要があります: bmin.shape={bmin.shape}, "
+            f"bmax.shape={bmax.shape}"
+        )
+    if not (np.all(np.isfinite(bmin)) and np.all(np.isfinite(bmax))):
+        raise ValueError(f"bmin/bmax は全要素が有限値である必要があります: bmin={bmin}, bmax={bmax}")
+    if np.any(bmax < bmin - EPS_GEOM):
+        raise ValueError(f"bmax が bmin を下回っています（EPS_GEOM超過）: bmin={bmin}, bmax={bmax}")
+
+    clipped_min = np.maximum(bmin[:2], space.inner_min_rel[:2])
+    clipped_max = np.minimum(bmax[:2], space.inner_max_rel[:2])
+
+    # 積ではなく軸ごとに判定する（両軸が負の場合に積が正になる誤判定を避けるため）。
+    if np.any(clipped_max <= clipped_min):
+        return slice(0, 0), slice(0, 0)
+
+    _, _, xs, ys = _cell_centers(space.inner_min_rel, space.inner_max_rel, space.cell)
+    nx, ny = space.height.shape
+
+    x_start = int(np.clip(np.searchsorted(xs, clipped_min[0], side="left"), 0, nx))
+    x_stop = int(np.clip(np.searchsorted(xs, clipped_max[0], side="left"), 0, nx))
+    y_start = int(np.clip(np.searchsorted(ys, clipped_min[1], side="left"), 0, ny))
+    y_stop = int(np.clip(np.searchsorted(ys, clipped_max[1], side="left"), 0, ny))
+
+    if x_start >= x_stop or y_start >= y_stop:
+        return slice(0, 0), slice(0, 0)
+
+    return slice(x_start, x_stop), slice(y_start, y_stop)
+
+
+def bake_placed(space: ContainerSpace, placed: list[PlacedItem]) -> None:
+    """既配置荷物のAABBから `height` を全再構築する（詳細仕様書 §4.2 T-008節）。
+
+    呼び出しごとに `floor_z` から作り直すため、過去の `height` は引き継がない
+    （増分キャッシュ・`cache_*` 関数は本関数のスコープ外）。各 `PlacedItem` の
+    `aabb_min_rel`/`aabb_max_rel`（回転後AABB、コンテナ相対）をそのまま `cells_of_aabb` へ
+    渡し、空sliceが返れば当該荷物をスキップする。対象セルは現在値と `aabb_max_rel[2]` の
+    最大値で更新し（`ceil_z` によるclampはしない）、`floor_z`/`ceil_z` は変更しない。
+
+    Args:
+        space: 対象コンテナの `ContainerSpace`。`height` をその場で書き換える。
+        placed: 対象コンテナに既に配置された荷物のリスト。
+    """
+    space.height[...] = space.floor_z
+
+    for item in placed:
+        x_slice, y_slice = cells_of_aabb(space, item.aabb_min_rel, item.aabb_max_rel)
+        if x_slice.stop <= x_slice.start or y_slice.stop <= y_slice.start:
+            continue
+        space.height[x_slice, y_slice] = np.maximum(
+            space.height[x_slice, y_slice], item.aabb_max_rel[2]
+        )
