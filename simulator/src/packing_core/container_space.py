@@ -19,7 +19,7 @@ class ContainerSpace:
 
     Attributes:
         index: コンテナ index（`cdict["index"]` と同一）。
-        offset_x: `index * spacing`。コンテナ原点の世界座標X（詳細仕様書 §3.1）。
+        offset_x: `float(cdict["center"][0])`。コンテナ原点の世界座標X（詳細仕様書 §3.1）。
         inner_min_rel: 内壁AABBの最小点（コンテナ相対）。shape (3,), float64。
         inner_max_rel: 内壁AABBの最大点（コンテナ相対）。shape (3,), float64。
         cut_planes: 軸整列でない内壁面の半空間 `(normal_rel, d)` のリスト。
@@ -205,7 +205,7 @@ def _build_floor_ceil(
     return floor_z, ceil_z
 
 
-def build_container_space(cdict: dict, index: int, spacing: float, cell: float) -> ContainerSpace:
+def build_container_space(cdict: dict, index: int, cell: float) -> ContainerSpace:
     """`container_list[i]` の辞書から有効空間と絞り込み格子を構築する（cut・棚対応）。
 
     `cdict["points"]`（世界座標の代表点）と `cdict["n_vecs"]`（外向き単位法線）を正として
@@ -216,7 +216,6 @@ def build_container_space(cdict: dict, index: int, spacing: float, cell: float) 
     Args:
         cdict: `container_list` の1要素。`constants.OBS_KEYS["container"]` のキーを持つ。
         index: コンテナ index。
-        spacing: コンテナ間隔 [m]（`init_states` から取得済みの値）。
         cell: 絞り込み格子のセル一辺の長さ [m]（`GridParams.cell`）。
 
     Returns:
@@ -227,7 +226,7 @@ def build_container_space(cdict: dict, index: int, spacing: float, cell: float) 
             内壁AABBの一辺が0以下になる場合、または `cdict["n_vecs"]` にゼロ長
             （`EPS_GEOM` 以下）の法線が含まれる場合。
     """
-    offset_x = index * spacing
+    offset_x = float(np.asarray(cdict["center"], dtype=np.float64)[0])
     origin_world = np.array([offset_x, 0.0, 0.0], dtype=np.float64)
 
     inner_min_rel = np.full(3, -np.inf, dtype=np.float64)

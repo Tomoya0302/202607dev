@@ -55,6 +55,7 @@ def _box_cdict(
     cut_x: float = 0.0,
     cut_y: float = 0.0,
     shelf: bool = False,
+    offset_x: float | None = None,
 ) -> dict:
     """軸整列直方体コンテナの合成 cdict（container_list要素）を組み立てる。
 
@@ -68,8 +69,13 @@ def _box_cdict(
     `cut_x>0` を指定した場合でも本関数のジオメトリは直方体のままであり、これは
     「小棚は `cut_planes`/`shelf` に依存せず `cut_x` の値だけで計算される」という
     §K.2 の生成条件を独立に検証するための Fixture C として意図的に用いる。
+
+    `offset_x` を明示指定すると、`index * spacing` の代わりにその値を `center`/`points` の
+    原点世界Xとして使う（`index * spacing` では表現できない非等間隔配置の回帰テスト用、
+    interface_notes.md §I-8）。省略時（`None`）は従来通り `index * spacing` を使用する。
     """
-    offset_x = index * spacing
+    if offset_x is None:
+        offset_x = index * spacing
     imin = np.asarray(inner_min_rel, dtype=np.float64)
     imax = np.asarray(inner_max_rel, dtype=np.float64)
     mid = (imin + imax) / 2.0
@@ -133,7 +139,7 @@ def test_build_container_space_basic_index_and_offset():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     assert space.index == 0
     assert space.offset_x == pytest.approx(0.0)
@@ -145,7 +151,7 @@ def test_build_container_space_inner_bounds_recovered_from_points_and_n_vecs():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     np.testing.assert_allclose(space.inner_min_rel, INNER_MIN_REL, atol=1e-9)
     np.testing.assert_allclose(space.inner_max_rel, INNER_MAX_REL, atol=1e-9)
@@ -156,7 +162,7 @@ def test_build_container_space_no_cut_planes_and_no_shelf():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     assert list(space.cut_planes) == []
     assert list(space.shelf_boxes) == []
@@ -168,7 +174,7 @@ def test_floor_z_initialized_at_inner_wall_bottom():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     assert space.floor_z.shape == (NX, NY)
     assert space.floor_z.dtype == np.float64
@@ -179,7 +185,7 @@ def test_ceil_z_initialized_at_inner_wall_top():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     assert space.ceil_z.shape == (NX, NY)
     assert space.ceil_z.dtype == np.float64
@@ -190,7 +196,7 @@ def test_height_initialized_at_initial_floor_height():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     assert space.height.shape == (NX, NY)
     assert space.height.dtype == np.float64
@@ -208,7 +214,7 @@ def test_contains_oriented_box_inside_is_true():
     from src.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict = _box_cdict(index=0, spacing=2.0)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     center_rel = np.array([0.0, 0.0, (INNER_MIN_REL[2] + INNER_MAX_REL[2]) / 2.0], dtype=np.float64)
     osize = np.array([0.3, 0.3, 0.3], dtype=np.float64)
@@ -219,7 +225,7 @@ def test_contains_oriented_box_poking_through_side_wall_is_false():
     from src.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict = _box_cdict(index=0, spacing=2.0)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     # +X 側の内壁(0.48)を0.1mはみ出す位置に配置
     center_rel = np.array([INNER_MAX_REL[0] - 0.1, 0.0, 0.8], dtype=np.float64)
@@ -231,7 +237,7 @@ def test_contains_oriented_box_poking_through_ceiling_is_false():
     from src.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict = _box_cdict(index=0, spacing=2.0)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     # 天井(1.58)を0.1mはみ出す位置に配置
     center_rel = np.array([0.0, 0.0, INNER_MAX_REL[2] - 0.1], dtype=np.float64)
@@ -248,28 +254,50 @@ def test_effective_volume_matches_inner_wall_volume_within_1_percent():
     from src.packing_core.container_space import build_container_space, effective_volume
 
     cdict = _box_cdict(index=0, spacing=2.0)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     result = effective_volume(space)
     relative_error = abs(result - cdict["volume"]) / cdict["volume"]
     assert relative_error < 0.01
 
 
-# --- offset_x = index * spacing（並進不変性込み） -----------------------------------------
+# --- offset_x = cdict["center"][0]（並進不変性込み） --------------------------------------
+# interface_notes.md §I-8: offset_x は cdict["center"][0] を直接使用する。以下の fixture では
+# center[0] がたまたま index*spacing の値になるよう構成しているが、アサーションの根拠は
+# あくまで cdict["center"][0] とする（index*spacing の再計算ではない）。
 
-def test_offset_x_equals_index_times_spacing():
+def test_offset_x_uses_reported_center():
     from src.packing_core.container_space import build_container_space
 
     index = 3
     spacing = 1.8
     cdict = _box_cdict(index=index, spacing=spacing)
-    space = build_container_space(cdict, index=index, spacing=spacing, cell=CELL)
+    space = build_container_space(cdict, index=index, cell=CELL)
 
-    assert space.offset_x == pytest.approx(index * spacing)
+    assert space.offset_x == pytest.approx(cdict["center"][0])
 
     # inner_min_rel/inner_max_rel はコンテナ相対座標であり、offset_x（並進）に依存しないはず。
     np.testing.assert_allclose(space.inner_min_rel, INNER_MIN_REL, atol=1e-9)
     np.testing.assert_allclose(space.inner_max_rel, INNER_MAX_REL, atol=1e-9)
+
+
+def test_offset_x_uses_reported_center_for_nonuniform_layout():
+    """center.x が単一の index*spacing では表現できない非等間隔配置でも、
+    build_container_space は cdict["center"][0] をそのまま offset_x として採用する
+    （interface_notes.md §I-8 の回帰テスト）。"""
+    from src.packing_core.container_space import build_container_space
+
+    cdict_a = _box_cdict(index=2, offset_x=0.37)
+    cdict_b = _box_cdict(index=5, offset_x=5.93)
+
+    space_a = build_container_space(cdict_a, index=2, cell=CELL)
+    space_b = build_container_space(cdict_b, index=5, cell=CELL)
+
+    assert space_a.offset_x == pytest.approx(0.37)
+    assert space_a.offset_x == pytest.approx(cdict_a["center"][0])
+
+    assert space_b.offset_x == pytest.approx(5.93)
+    assert space_b.offset_x == pytest.approx(cdict_b["center"][0])
 
 
 # ============================================================================
@@ -313,7 +341,7 @@ def test_small_shelf_computed_regardless_of_cut_planes_and_shelf_flag():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     assert list(space.cut_planes) == []  # 幾何上は非軸整列面なし
     assert len(space.shelf_boxes) == 1  # 小棚のみ（大棚は shelf=False のため無し）
@@ -325,7 +353,7 @@ def test_small_shelf_not_added_when_clipped_volume_is_zero():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.0, cut_y=0.0, shelf=False)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     assert list(space.shelf_boxes) == []
 
@@ -334,7 +362,7 @@ def test_main_shelf_absent_when_shelf_flag_false():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     # 小棚のみ（大棚に相当する2個目のAABBは含まれない）。
     assert len(space.shelf_boxes) == 1
@@ -344,7 +372,7 @@ def test_main_shelf_present_when_shelf_flag_true():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=True)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     # 小棚 + 大棚 の2個。
     assert len(space.shelf_boxes) == 2
@@ -354,7 +382,7 @@ def test_shelf_boxes_aabb_matches_golden_for_fixture_c():
     from src.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=True)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     expected = golden.expected_shelf_boxes(
         FIXTURE_C_LENGTH,
@@ -387,7 +415,7 @@ def test_floor_z_matches_golden_for_cut_fixture():
     cdict, inner_min, inner_max, cut_planes, shelf_boxes, floor_z_golden, ceil_z_golden = (
         _fixture_ab_expected(shelf=False)
     )
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=golden.CELL)
+    space = build_container_space(cdict, index=0, cell=golden.CELL)
 
     np.testing.assert_allclose(space.floor_z, floor_z_golden, rtol=0.0, atol=EPS_GEOM)
 
@@ -399,7 +427,7 @@ def test_ceil_z_matches_golden_for_shelf_fixture():
     cdict, inner_min, inner_max, cut_planes, shelf_boxes, floor_z_golden, ceil_z_golden = (
         _fixture_ab_expected(shelf=True)
     )
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=golden.CELL)
+    space = build_container_space(cdict, index=0, cell=golden.CELL)
 
     np.testing.assert_allclose(space.ceil_z, ceil_z_golden, rtol=0.0, atol=EPS_GEOM)
 
@@ -410,7 +438,7 @@ def test_contains_oriented_box_false_when_poking_into_cut_wedge():
     from src.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict, *_ = _fixture_ab_expected(shelf=False)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=golden.CELL)
+    space = build_container_space(cdict, index=0, cell=golden.CELL)
 
     center_rel = np.array([-0.44, 0.0, 0.10], dtype=np.float64)
     osize = np.array([0.04, 0.20, 0.10], dtype=np.float64)
@@ -422,7 +450,7 @@ def test_contains_oriented_box_true_on_raised_floor():
     from src.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict, *_ = _fixture_ab_expected(shelf=False)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=golden.CELL)
+    space = build_container_space(cdict, index=0, cell=golden.CELL)
 
     center_rel = np.array([-0.44, 0.0, 0.30], dtype=np.float64)
     osize = np.array([0.04, 0.20, 0.10], dtype=np.float64)
@@ -435,7 +463,7 @@ def test_contains_oriented_box_false_when_overlapping_main_shelf():
     from src.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict, *_ = _fixture_ab_expected(shelf=True)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=golden.CELL)
+    space = build_container_space(cdict, index=0, cell=golden.CELL)
 
     center_rel = np.array([0.0, 0.25, 0.53], dtype=np.float64)
     osize = np.array([0.10, 0.10, 0.02], dtype=np.float64)
@@ -452,7 +480,7 @@ def test_effective_volume_rectangular_baseline_matches_analytic_volume():
     from src.packing_core.container_space import build_container_space, effective_volume
 
     cdict = _box_cdict(cut_x=0.0, cut_y=0.0, shelf=False)
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    space = build_container_space(cdict, index=0, cell=CELL)
 
     expected = golden.expected_analytic_box_volume(INNER_MIN_REL, INNER_MAX_REL)
     result = effective_volume(space)
@@ -468,7 +496,7 @@ def test_effective_volume_matches_independent_grid_integral_for_cut_fixture():
     cdict, inner_min, inner_max, cut_planes, shelf_boxes, floor_z_golden, ceil_z_golden = (
         _fixture_ab_expected(shelf=False)
     )
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=golden.CELL)
+    space = build_container_space(cdict, index=0, cell=golden.CELL)
 
     expected_grid_volume = golden.expected_grid_volume(floor_z_golden, ceil_z_golden, golden.CELL)
     result = effective_volume(space)
@@ -487,7 +515,7 @@ def test_effective_volume_matches_independent_grid_integral_for_cut_and_shelf_fi
     cdict, inner_min, inner_max, cut_planes, shelf_boxes, floor_z_golden, ceil_z_golden = (
         _fixture_ab_expected(shelf=True)
     )
-    space = build_container_space(cdict, index=0, spacing=2.0, cell=golden.CELL)
+    space = build_container_space(cdict, index=0, cell=golden.CELL)
 
     expected_grid_volume = golden.expected_grid_volume(floor_z_golden, ceil_z_golden, golden.CELL)
     result = effective_volume(space)

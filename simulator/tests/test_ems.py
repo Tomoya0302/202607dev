@@ -75,7 +75,7 @@ def _empty_cdict(inner_min_rel: np.ndarray, inner_max_rel: np.ndarray) -> dict:
 def _empty_space(inner_min_rel: np.ndarray = INNER_MIN_REL, inner_max_rel: np.ndarray = INNER_MAX_REL):
     """cut・棚なしの `ContainerSpace` を構築する（`build_container_space` 経由）。"""
     cdict = _empty_cdict(inner_min_rel, inner_max_rel)
-    return build_container_space(cdict, index=0, spacing=2.0, cell=CELL)
+    return build_container_space(cdict, index=0, cell=CELL)
 
 
 def _round_bounds(min_rel: np.ndarray, max_rel: np.ndarray, ndigits: int = ROUND_NDIGITS) -> tuple:
