@@ -261,9 +261,194 @@
 
 ---
 
+## K. T-007 cut・棚の変換規則（読解結果、一次情報: `ground_handling/containers.py` / `utils.py`）
+
+読解専用（コピー禁止）。以下は `container_space.py`（T-007）が採用する変換規則の根拠記録。
+
+### K.1 `buffer` の復元（§I-7 の再確認）
+
+`buffer = float(cdict["center"][2]) - float(cdict["height"]) / 2.0`
+（`containers.py:61,66`: `pos=(0,0,hz+buffer)` → `center=local_to_global(pos)` より逆算）。
+棚AABBの構築にも同じ復元式を用いる。
+
+### K.2 小棚（small shelf）
+
+出典: `containers.py::_create_small_shelf`（L194–213）。呼び出し元 `create()` の
+L88–91（`require_shelf=True`側）と L94–98（`require_shelf=False`側）は**同一パラメータで
+両分岐とも呼び出す**。したがって小棚の存在は `cdict["shelf"]` の真偽に依存しない
+（公式コード上は常時生成）。
+
+半空間ではなく PyBullet の `halfExtents` ボックスとして定義される。コンテナ本体と同一の回転
+（Euler(π/2,0,0)）を適用し、`inner_min_rel`/`inner_max_rel` と同じコンテナ相対座標系に変換すると：
+
+```python
+center_rel = (-length/2 + cut_x/2 + thickness, 0.0, height/2 + thickness/2 + buffer)
+half        = (cut_x/2, width/2 - thickness, thickness/2)
+raw_min = center_rel - half
+raw_max = center_rel + half
+```
+
+**生成条件**: `cdict["shelf"]` の真偽・`cut_planes` の有無にかかわらず、常に上記AABBを計算する
+（→ K.4 のクリップ・正体積フィルタを経て採否を決める）。
+
+### K.3 大棚（main shelf）
+
+出典: `containers.py::_create_shelf`（L216–235）。呼び出し元 `create()` L81–86、
+`require_shelf=True` のときのみ呼ばれる。
+
+```python
+center_rel = (0.0, width/4, height/2 + thickness/2 + buffer)
+half        = (length/2 - thickness/2, width/4 - thickness, thickness/2)
+raw_min = center_rel - half
+raw_max = center_rel + half
+```
+
+**生成条件**: `cdict["shelf"] is True` のときのみ上記AABBを計算する。`cut_planes` の有無には
+依存しない。
+
+### K.4 内壁AABBへのクリップと正体積フィルタ
+
+数値確認: 大棚のX半径 `length/2 - thickness/2` は、内壁AABBのX境界
+（軸整列面から復元される `length/2 - thickness` 相当）より**壁厚の半分（`thickness/2`）だけ外側**
+に出る（棚が壁へ構造的に食い込む設計のため）。そのままでは有効空間の外に障害物AABBがはみ出すため、
+次のクリップを適用してから採用する：
+
+```python
+clip_min = elementwise_max(raw_min, inner_min_rel)
+clip_max = elementwise_min(raw_max, inner_max_rel)
+```
+
+さらに、クリップ後の各軸長 `clip_max[k] - clip_min[k]` が**全軸で `EPS_GEOM` より大きい場合のみ**
+`shelf_boxes` に追加する（ゼロ・負の寸法になる場合は追加しない）。この正体積フィルタは、退化した／
+ゼロ寸法の合成fixtureを安全に扱うための一般的な幾何正規化であり、特定fixtureのための特別分岐ではない。
+
+### K.5 T-006 合成fixtureの既知の不整合（本番コードでは救済しない）
+
+既存 `tests/test_container_space.py::_box_cdict` は「cutなし直方体」を意図しつつ
+`cut_x=0.3`/`cut_y=0.3` を保持している。K.2 の生成条件（無条件生成）をそのまま適用すると、
+この既存fixtureに対しても小棚AABBが計算され、T-006の既存アサーション
+（`shelf_boxes == []`、`effective_volume` 誤差 <1%）と矛盾する。
+
+→ `container_space.py` 側にfixture救済のための特別分岐は追加しない。矛盾は **fixture側の不整合**
+として扱い、T-007のテスト準備セッションで `_box_cdict` の既定値を `cut_x=0.0, cut_y=0.0` に修正し、
+真の「cutなし直方体」を表すfixtureへ更新する（`shelf=False` は維持）。この修正は
+`tests/test_container_space.py` の編集権限を持つテスト準備セッションで行う。
+
+### K.6 cut plane構築の一般化（T-006ロジックの拡張、変更なし）
+
+T-006で実装済みの `_axis_alignment` による半空間分類（軸整列→`inner_min_rel`/`inner_max_rel`、
+非軸整列→`cut_planes`）は `cdict["points"]`/`["n_vecs"]` に対して汎用であり、cutの有無に
+よらずそのまま適用する。追加の特別処理は不要。
+
+### K.7 floor_z / ceil_z の算出規則
+
+格子セル中心 `(x_c, y_c)`（コンテナ相対）について、各 `cut_plane (normal_rel=(nx,ny,nz), d)` を
+次のように分類し反映する：
+
+* `nz < -EPS_GEOM`（下向き成分を持つ面）: `normal·(x_c,y_c,z) <= d` を `z` について解くと
+  `z >= (d - nx*x_c - ny*y_c) / nz`（負の `nz` で除するため不等号反転）。この下限を
+  `floor_z[i,j]` の候補とし、`inner_min_rel[2]` との `max` を取る。
+* `nz > +EPS_GEOM`（上向き成分を持つ面）: 同様に `z <= (d - nx*x_c - ny*y_c) / nz`。
+  この上限を `ceil_z[i,j]` の候補とし、`inner_max_rel[2]` との `min` を取る。
+* `ceil_z[i,j]` はさらに、そのセルのXY範囲と交差する `shelf_boxes` の下面 `z`（`box_min[2]`）
+  とも `min` を取る。
+
+**セル中心座標・格子添字の規約**（T-006実装 `container_space.py:114-119` を正式仕様として明文化。
+矛盾なし、変更不要）：
+
+```python
+nx = max(1, round(size[0] / cell))   # size = inner_max_rel - inner_min_rel（T-006既存式）
+ny = max(1, round(size[1] / cell))
+
+x_c[i] = inner_min_rel[0] + (i + 0.5) * cell   # i = 0, ..., nx-1
+y_c[j] = inner_min_rel[1] + (j + 0.5) * cell   # j = 0, ..., ny-1
+```
+
+* 有効index範囲は `i ∈ {0,...,nx-1}`, `j ∈ {0,...,ny-1}`（`floor_z`/`ceil_z`/`height` の shape
+  `(nx,ny)` と一致、T-006のまま）。
+* **端数セルの扱い**: `round()` により `nx*cell` は `size[0]` と厳密には一致しない場合がある
+  （最大 `cell/2` の差）。`effective_volume()` は全セルを `cell×cell` として扱い、この端数分の
+  面積補正は行わない（T-006 `effective_volume()` の既存実装のまま、変更不要）。
+* **セル中心が `inner_max_rel` を超えないことの証明**: `nx = round(size/cell)` の定義より
+  `|nx - size/cell| <= 0.5` ⇒ `nx <= size/cell + 0.5` ⇒ `(nx-0.5)*cell <= size` ⇒
+  `x_c[nx-1] = inner_min_rel[0] + (nx-0.5)*cell <= inner_min_rel[0] + size[0] = inner_max_rel[0]`
+  （Y軸も同様）。等号は `size/cell` がちょうど整数+0.5のときのみ成立。したがって全セル中心は
+  常に `[inner_min_rel, inner_max_rel]` の範囲内に収まり、境界超過に対する特別なクランプ処理は
+  不要。
+
+### K.8 `normal_z ≈ 0`（`|nz| <= EPS_GEOM`）の面の扱い
+
+z方向を拘束しない面（XY方向のみの制約）。`floor_z`/`ceil_z` の算出式には**寄与させない**
+（K.7の分類から除外する）。格子は絞り込み専用であり（本書規約・実装詳細仕様書§2）、
+このような面によるXY方向の除外は `contains_oriented_box` の8頂点×全`cut_planes`半空間判定
+でのみ最終的に行う。格子段階でこれを無視しても、格子は事前絞り込み用のため安全側
+（誤って除外しない）に倒れるだけであり、健全性は損なわれない。
+
+### K.9 golden fixtureの生成方針（T-007テスト準備セッションで実施）
+
+* 幾何（`points`/`n_vecs`）: `ground_handling/utils.py::write_open_cut_corner_cup_obj` は
+  PyBullet非依存の純関数。固定の `cut_x/cut_y/thickness/length/height/width` を渡して
+  **実際に呼び出し**、返り値をgolden入力とする（読解結果の転記ではなく、公式関数の直接呼び出し
+  による値取得。コピーではない）。
+* 期待 `floor_z`/`ceil_z`: `container_space.py` を経由せず、K.7の式を独立実装
+  （別スクリプトまたはテスト内のローカル計算）してgolden配列を作る。
+* shelf AABB: K.2/K.3/K.4の式に同じ固定値を代入した独立計算値をgoldenとする。
+* `effective_volume`（棚ありケース）の許容誤差: **本文書では定義しない**。テスト準備セッションで
+  `cdict["volume"]`（または`evaluator.py`の式）との実測差を確認し、格子離散化誤差から説明可能な
+  範囲かを検証したうえで許容値を決定する。単一区間の `floor_z`/`ceil_z` では表現できない空間
+  （例：棚の上下に有効空間が分離するセル）が確認された場合は、その時点で付録D形式により停止し
+  人間に報告する。
+
+### K.10 `effective_volume()` の責務再定義（実測調査結果）
+
+固定パラメータ（`length=height=width=1.00`, `thickness=0.02`, `cut_x=cut_y=0.20`, `buffer=0.02`,
+`shelf=False`）で `write_open_cut_corner_cup_obj`/`aff` を直接呼び出し、K.6/K.7 の式を
+`container_space.py` を使わず独立実装して検証したところ、格子（`floor_z`/`ceil_z` 単一区間）から
+積分した体積は `cdict["volume"]`（公式体積式）と構造的に一致しないことが判明した。
+
+**実測値**（このfixtureにおける相対誤差、公式体積式 `base − cut − small_shelf`＝0.865344 m³ 基準）：
+
+| 反映内容 | 格子積分体積 | 相対誤差 |
+| --- | --- | --- |
+| cut床上昇のみ | 0.885831 m³ | 約2.37% |
+| cut床上昇＋小棚ceilキャップ | 0.793671 m³ | 約8.28% |
+
+**原因は2つ、独立に存在する**：
+
+1. **入口面（door側）の非対称性**（棚の有無によらず発生）：公式体積式は `inner_width = width - 2*thickness`
+   （両側とも壁厚を引く前提）を使うが、実ジオメトリ（`points`/`n_vecs`）では入口面（-Y側）は開口のため
+   壁厚が引かれず、Y方向の実スパンは `width - thickness` になる（実測: 0.98 vs 公式式の0.96）。
+   この差だけで約2.37%の乖離が生じる。
+2. **棚のceilキャップによる上方空間喪失**（K.2の小棚無条件生成の帰結）：`ceil_z` を棚下面で
+   キャップする設計（§4.2・K.7）では、棚は薄い障害物（厚さ`thickness`のみ）であるにもかかわらず、
+   単一区間の `floor_z`/`ceil_z` モデルでは棚の**上側空間全体**が表現から失われる。実測で
+   0.09216 m³（公式体積の約10.65%）の喪失。この喪失は格子解像度を上げても解消しない
+   （量子化誤差ではなく、単一区間モデルの表現力の限界）。
+
+**採用した設計判断**（人間承認・2026-07-17）：
+
+* `effective_volume()` は「`floor_z`/`ceil_z` 単一区間格子上の近似・診断用体積」と責務を明確化する。
+  公式fillスコアの分母には使わない（fill分母は `evaluator.py`／転記済み公式値を正とする既存方針を
+  維持・強化）。
+* `cdict["volume"]` との <1% 一致は、cut・棚を含むfixtureのDoDから外す。代わりに、golden の
+  `floor_z`/`ceil_z` から独立計算した格子積分値（`sum(max(ceil_z-floor_z,0)*cell*cell)`）との
+  一致を検証する（＝実装が仕様どおりの格子積分を行っているかの確認に限定する）。
+* `cdict["volume"]` との差は診断値として記録するのみで合否条件にしない。
+* 直方体基準ケース（`cut_x=0`・`cut_y=0`・shelf=False・小棚クリップ後ゼロ体積）に限っては、
+  上記いずれの原因も発生しないため、引き続き解析的内壁体積との相対誤差 <1% を要求する。
+* 棚上方空間を表現できない制約は、複数区間（バンド）格子への拡張なしに解消できないため、
+  T-007/T-008のスコープには含めない既知の制約として記録する（将来の改善候補）。
+* 棚体積のみを別経路で単純減算する代替案（`ceil_z`キャップと独立に体積だけ補正する方式）は、
+  同一関数内に異なる意味の空間モデルを二重化することになるため今回は不採用。
+
+---
+
 ## 更新履歴
 
 | 日付 | 内容 |
 | --- | --- |
 | 2026-07-17 | 初版（T-002）。§A〜H 転記表、§I 不一致一覧、§J 質問リスト |
 | 2026-07-17 | T-006 Session A：§I-7 追記（`buffer` キー不在の解決方針）。`実装詳細仕様書.md` §4.2 を同方針で修正 |
+| 2026-07-17 | T-007 仕様補正：§K 追加（cut plane の floor_z/ceil_z 反映規則、小棚・大棚AABBの復元式とクリップ・正体積フィルタ、生成条件は `cut_planes` に依存させない設計判断、T-006 fixture の `cut_x`/`cut_y` 不整合はfixture側の問題としてテスト準備セッションで修正する方針、golden fixture 生成方針）。`実装詳細仕様書.md` §4.2・§6 を同方針で修正 |
+| 2026-07-17 | T-007 仕様再補正：§K.10 追加。実測調査により棚ありfixtureの`effective_volume`が`cdict["volume"]`と<1%一致しない構造的原因（入口面非対称性 約2.37%、棚ceilキャップによる上方空間喪失 約10.65%）を特定。`effective_volume()`の責務を近似・診断用に再定義し、DoDを直方体基準ケース（<1%維持）とcut・棚ケース（golden格子積分との一致、`cdict["volume"]`一致は不要）に分離。`実装詳細仕様書.md` §4.2・§6 を同方針で修正 |
+| 2026-07-17 | T-007 仕様追記：§K.7 にセル中心座標規約（`x_c[i]=inner_min_rel[0]+(i+0.5)*cell`等）・`nx`/`ny`算出式（T-006既存式を正式仕様化）・端数セルの面積補正なし方針・セル中心が`inner_max_rel`を超えないことの数学的証明を追記。T-006実装との矛盾なし。`実装詳細仕様書.md` §4.2 を同方針で修正 |
