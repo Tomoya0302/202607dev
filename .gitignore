@@ -1,0 +1,72 @@
+# Python
+
+**/**pycache**/
+*.py[cod]
+*$py.class
+
+# Python environments
+
+.venv/
+**/.venv/
+venv/
+env/
+
+# Python tools
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Environment variables and secrets
+
+.env
+**/.env
+!.env.example
+!**/.env.example
+
+# Generated simulator outputs
+
+simulator/artifacts/
+simulator/results/
+simulator/images/
+simulator/logs/
+simulator/submissions/
+
+# Machine learning outputs
+
+*.pt
+*.pth
+*.ckpt
+events.out.tfevents.*
+
+# Windows metadata
+
+*:Zone.Identifier
+Thumbs.db
+Desktop.ini
+
+# macOS
+
+.DS_Store
+
+# Editor temporary files
+
+*.swp
+*.swo
+*~
+.vscode/*.local.json
+
+# Build and packaging
+
+build/
+dist/
+*.egg-info/
+
+# Temporary files
+
+tmp/
+temp/
+.cache/

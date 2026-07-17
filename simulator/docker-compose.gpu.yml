@@ -1,0 +1,23 @@
+name: simulator-gpu
+services:
+  train:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.train
+    image: ground-handling-train:torch2.7-cu128
+    container_name: gh_train
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    # Avoid root-owned files in the bind-mounted repository.
+    # Defaults match the first Ubuntu user; override with LOCAL_UID/LOCAL_GID.
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    environment:
+      HOME: /tmp/trainer
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      PYTHONPATH: /workspace
+    gpus: all
+    shm_size: "8gb"
+    stdin_open: true
+    tty: true

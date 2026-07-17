@@ -1,0 +1,60 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Python: syntax check",
+      "type": "shell",
+      "command": "${workspaceFolder}/simulator/.venv/bin/python -m compileall -q src scripts agents",
+      "options": {
+        "cwd": "${workspaceFolder}/simulator"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker CPU: build and start",
+      "type": "shell",
+      "command": "docker compose up -d --build",
+      "options": {
+        "cwd": "${workspaceFolder}/simulator"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker CPU: evaluate",
+      "type": "shell",
+      "command": "docker compose up -d --build && docker compose exec -T dev1 python -m scripts.run_test --verbose True",
+      "options": {
+        "cwd": "${workspaceFolder}/simulator"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker GPU: check",
+      "type": "shell",
+      "command": "docker compose -f docker-compose.gpu.yml run --rm train python -m scripts.check_gpu",
+      "options": {
+        "cwd": "${workspaceFolder}/simulator"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker GPU: smoke train",
+      "type": "shell",
+      "command": "docker compose -f docker-compose.gpu.yml run --rm train python -m scripts.train_smoke",
+      "options": {
+        "cwd": "${workspaceFolder}/simulator"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker GPU: TensorBoard",
+      "type": "shell",
+      "command": "docker compose -f docker-compose.gpu.yml run --rm -p 6006:6006 train tensorboard --logdir /workspace/artifacts --host 0.0.0.0 --port 6006",
+      "options": {
+        "cwd": "${workspaceFolder}/simulator"
+      },
+      "problemMatcher": [],
+      "isBackground": false
+    }
+  ]
+}

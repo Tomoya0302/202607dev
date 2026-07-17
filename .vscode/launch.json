@@ -1,0 +1,38 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "PyBullet GUI: run_test",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "scripts.run_test",
+      "args": [
+        "--render-mode",
+        "human",
+        "--verbose",
+        "True"
+      ],
+      "cwd": "${workspaceFolder}/simulator",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Current Python: check GPU",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "scripts.check_gpu",
+      "cwd": "${workspaceFolder}/simulator",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Current Python: train smoke",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "scripts.train_smoke",
+      "cwd": "${workspaceFolder}/simulator",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

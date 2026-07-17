@@ -1,0 +1,64 @@
+# GPU training environment only.
+# Keep dockerfiles/Dockerfile unchanged for official CPU evaluation.
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    TZ=Asia/Tokyo \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PATH=/opt/conda/bin:${PATH} \
+    DEBIAN_FRONTEND=noninteractive \
+    HOME=/tmp/trainer
+
+ARG MINICONDA_VERSION=py312_25.7.0-2
+ARG PYTORCH_VERSION=2.7.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        libegl1 \
+        libgl1 \
+        libgl1-mesa-dev \
+        locales \
+        pkg-config \
+        python3-dev \
+        tzdata \
+        unzip \
+        wget \
+        zip \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime \
+    && echo "${TZ}" > /etc/timezone
+
+# Match the evaluation container's Python 3.12 family.
+RUN wget -q \
+      "https://repo.anaconda.com/miniconda/Miniconda3-${MINICONDA_VERSION}-Linux-x86_64.sh" \
+      -O /tmp/miniconda.sh \
+    && bash /tmp/miniconda.sh -b -p /opt/conda \
+    && rm /tmp/miniconda.sh \
+    && python -m pip install --upgrade pip setuptools wheel
+
+# Match simulator/evaluation library versions, replacing only CPU PyTorch
+# with the official CUDA 12.8 build.
+RUN python -m pip install \
+      gymnasium==1.2.3 \
+      pybullet==3.2.7 \
+      pillow==10.3.0 \
+    && python -m pip install \
+      "torch==${PYTORCH_VERSION}" \
+      --index-url https://download.pytorch.org/whl/cu128
+
+COPY requirements/train.txt /tmp/train-requirements.txt
+RUN python -m pip install -r /tmp/train-requirements.txt \
+    && rm /tmp/train-requirements.txt \
+    && mkdir -p /workspace /tmp/trainer \
+    && chmod 1777 /tmp/trainer
+
+WORKDIR /workspace
+
+CMD ["bash"]

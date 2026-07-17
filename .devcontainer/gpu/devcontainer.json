@@ -1,0 +1,37 @@
+{
+  "name": "Ground Handling GPU Training",
+  "dockerComposeFile": "../../simulator/docker-compose.gpu.yml",
+  "service": "train",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  "overrideCommand": true,
+  "remoteEnv": {
+    "HOME": "/tmp/trainer",
+    "PYTHONPATH": "/workspace"
+  },
+  "forwardPorts": [6006],
+  "portsAttributes": {
+    "6006": {
+      "label": "TensorBoard",
+      "onAutoForward": "notify"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-azuretools.vscode-containers",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/conda/bin/python",
+        "python.analysis.extraPaths": [
+          "/workspace"
+        ],
+        "python.analysis.typeCheckingMode": "basic"
+      }
+    }
+  },
+  "postCreateCommand": "python -m scripts.check_gpu"
+}
