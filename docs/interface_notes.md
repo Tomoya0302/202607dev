@@ -207,6 +207,19 @@
    sample_config.json task001 は `look_ahead=10`。もともと仮定A1は未確認(Q1)であり、
    `sample_config.json` はローカル動作確認用で評価基盤とは別分布（README:456）と明記されているため
    台帳上は不整合ではない。ハードコード禁止方針のため実装への影響なし。
+7. **【T-006で発覚・解決済】`container_space.py` 仕様（旧§4.2）の `buffer` キー前提の誤り**:
+   旧仕様書は `cdict`（container_list要素）に `buffer` キーが存在する前提で
+   `inner_min_rel`/`inner_max_rel` を `thickness`/`buffer` の寸法式から再構築する設計だったが、
+   `buffer` は `containers.py:24` の `Container.buffer`（既定0.01、**configで上書き可能**）であり、
+   `get_item_info_in_containers()`（containers.py:314–336）が生成する dict には**転記されていない**
+   （§E の転記表・`constants.OBS_KEYS["container"]` にも `buffer` は含まれない）。
+   さらに `sample_config.json` では `buffer=0.0` に上書きされており、固定値 0.01 で補うことも不正確。
+   → **解決方針**（人間承認済み・2026-07-17）：`CONTAINER_BUFFER` 等の固定値は `constants.py` に追加しない。
+   `container_space.py` は `cdict["points"]`（世界座標の代表点）と `cdict["n_vecs"]`（外向き法線）を
+   正として内壁形状を復元する（半空間 `normal_rel·x <= d` の交差、§4.2 参照）。
+   `buffer` がどうしても必要な場合のみ、公式実装の関係式
+   `buffer = float(cdict["center"][2]) - float(cdict["height"]) / 2.0` から都度復元し、キー欠落を
+   固定値で埋めない。`実装詳細仕様書.md §4.2` を本方針で修正済み。
 
 ---
 
@@ -253,3 +266,4 @@
 | 日付 | 内容 |
 | --- | --- |
 | 2026-07-17 | 初版（T-002）。§A〜H 転記表、§I 不一致一覧、§J 質問リスト |
+| 2026-07-17 | T-006 Session A：§I-7 追記（`buffer` キー不在の解決方針）。`実装詳細仕様書.md` §4.2 を同方針で修正 |
