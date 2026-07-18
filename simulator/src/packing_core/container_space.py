@@ -450,3 +450,34 @@ def bake_placed(space: ContainerSpace, placed: list[PlacedItem]) -> None:
         space.height[x_slice, y_slice] = np.maximum(
             space.height[x_slice, y_slice], item.aabb_max_rel[2]
         )
+
+
+def cache_bake_placed(
+    space: ContainerSpace, prev_height: np.ndarray, new_placed: list[PlacedItem]
+) -> np.ndarray:
+    """`bake_placed` の増分版。追加分の荷物だけを既存 `height` へ焼き込む（詳細仕様書 §4.2）。
+
+    `prev_height`（旧配置に対する `bake_placed` の全再構築結果）のコピーへ、`new_placed`
+    （今回の差分＝追加分のみ）のAABBセルだけ `np.maximum(現値, aabb_max_rel[2])` を適用する。
+    `bake_placed` 自体は変更しない。`floor_z` 起点・`max` 合成は追加順に依存しないため、
+    旧配置が不変なら `bake_placed(space, 旧配置+new_placed)` と完全一致する（`np.array_equal`）。
+
+    Args:
+        space: 対象コンテナの `ContainerSpace`（セル判定にのみ使用、`height` は書き換えない）。
+        prev_height: 旧配置に対する `bake_placed` 相当の height。shape (nx, ny), float64。
+        new_placed: 今回新たに追加された荷物のリスト（差分のみ、旧配置分は含めない）。
+
+    Returns:
+        更新後の height。呼び出し元の `prev_height` ともキャッシュ内配列とも別実体（コピー）で、
+        `writeable=False` に設定して返す。
+    """
+    height = np.array(prev_height, dtype=np.float64)
+
+    for item in new_placed:
+        x_slice, y_slice = cells_of_aabb(space, item.aabb_min_rel, item.aabb_max_rel)
+        if x_slice.stop <= x_slice.start or y_slice.stop <= y_slice.start:
+            continue
+        height[x_slice, y_slice] = np.maximum(height[x_slice, y_slice], item.aabb_max_rel[2])
+
+    height.flags.writeable = False
+    return height
