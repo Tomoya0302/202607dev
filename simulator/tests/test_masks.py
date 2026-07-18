@@ -56,13 +56,13 @@ def _unit_cube_space():
     return _box_space([0.0, 0.0, 0.0], [1.0, 1.0, 1.0], constants.GridParams().cell)
 
 
-def _make_candidate(pos_rel, osize):
+def _make_candidate(pos_rel, osize, container_idx=0, ems_id=0):
     from src.packing_core.types import Candidate
 
     return Candidate(
         item_idx=0,
-        container_idx=0,
-        ems_id=0,
+        container_idx=container_idx,
+        ems_id=ems_id,
         orientation=0,
         pos_rel=np.asarray(pos_rel, dtype=np.float64),
         osize=np.asarray(osize, dtype=np.float64),
@@ -342,3 +342,389 @@ def test_ceiling_returns_bool_and_does_not_mutate_inputs():
     assert np.array_equal(space.floor_z, floor_z_before)
     assert np.array_equal(space.ceil_z, ceil_z_before)
     assert np.array_equal(space.height, height_before)
+
+
+# --- T-015: MaskStage / evaluate_stage / prefilter_dims / check_overlap 契約 --------------
+#
+# T-015 時点では対象APIが masks.py に未実装のため、本セクションの各テストは
+# --collect-only では収集に成功しつつ、実行時は ImportError（未実装関数の import 失敗）で
+# 失敗することを許容する（詳細仕様書 §6 T-015〜T-017責務境界、T-015開発フロー）。
+# 本番コードは変更しない。
+
+
+def _make_ems(min_rel, max_rel):
+    from src.packing_core.types import EMSBox
+
+    return EMSBox(
+        min_rel=np.asarray(min_rel, dtype=np.float64),
+        max_rel=np.asarray(max_rel, dtype=np.float64),
+    )
+
+
+def _make_placed(aabb_min, aabb_max):
+    """check_overlap 用の最小 PlacedItem（aabb_min_rel/aabb_max_rel のみ意味を持つ）。"""
+    from src.packing_core.types import PlacedItem
+
+    aabb_min = np.asarray(aabb_min, dtype=np.float64)
+    aabb_max = np.asarray(aabb_max, dtype=np.float64)
+    return PlacedItem(
+        pos_world=np.zeros(3, dtype=np.float64),
+        orn_quat=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64),
+        size=aabb_max - aabb_min,
+        weight=1.0,
+        is_soft=False,
+        is_priority=False,
+        aabb_min_rel=aabb_min,
+        aabb_max_rel=aabb_max,
+    )
+
+
+def _make_state(containers, placed, ems):
+    from src.packing_core.state import PackingState
+
+    return PackingState(
+        containers=containers,
+        placed=placed,
+        pool=[],
+        ems=ems,
+        ems_truncation={idx: 0.0 for idx in ems},
+        meta={},
+    )
+
+
+# --- MaskStage --------------------------------------------------------------------------
+
+
+def test_mask_stage_values():
+    from enum import IntEnum
+
+    from src.packing_core.masks import MaskStage
+
+    assert issubclass(MaskStage, IntEnum)
+    assert MaskStage.DIMS == 0
+    assert MaskStage.INCLUSION == 1
+    assert MaskStage.OVERLAP == 2
+    assert MaskStage.CEILING == 3
+    assert MaskStage.L_PATH == 4
+
+
+# --- evaluate_stage: 単一段階ディスパッチ・引数契約 ----------------------------------------
+
+
+def test_evaluate_stage_dispatches_single_stage_only(monkeypatch):
+    """指定した1段階の判定関数だけが1回呼ばれ、他は呼ばれないこと。加えて、各判定関数へ
+    渡される引数が §4.5 の公開API契約（プレースホルダ引数名は公開シグネチャに一致）どおり
+    であること（呼び出し回数だけでなく引数も検証する）。"""
+    from src.packing_core import masks
+    from src.packing_core.masks import MaskStage
+
+    space = _unit_cube_space()
+    ems_box = _make_ems([0.0, 0.0, 0.0], [0.6, 0.6, 0.6])
+    cand = _make_candidate([0.3, 0.3, 0.3], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+    state = _make_state([space], {0: []}, {0: [ems_box]})
+
+    calls = {"dims": [], "inclusion": [], "overlap": [], "ceiling": []}
+
+    # スパイの引数名は masks.py 公開API契約（§4.5）のシグネチャに一致させる。呼び出し側が
+    # 位置引数／キーワード引数のどちらで呼んでも束縛される（内部実装構造は固定しない）。
+    def spy_dims(cand, ems):
+        calls["dims"].append((cand, ems))
+        return True
+
+    def spy_inclusion(space, cand, pp):
+        calls["inclusion"].append((space, cand, pp))
+        return True
+
+    def spy_overlap(state, cand, tol):
+        calls["overlap"].append((state, cand, tol))
+        return True
+
+    def spy_ceiling(space, cand, pp):
+        calls["ceiling"].append((space, cand, pp))
+        return True
+
+    monkeypatch.setattr(masks, "prefilter_dims", spy_dims)
+    monkeypatch.setattr(masks, "check_inclusion", spy_inclusion)
+    monkeypatch.setattr(masks, "check_overlap", spy_overlap)
+    monkeypatch.setattr(masks, "check_ceiling", spy_ceiling)
+
+    masks.evaluate_stage(state, cand, PP0, MaskStage.DIMS)
+    assert len(calls["dims"]) == 1
+    assert len(calls["inclusion"]) == 0
+    assert len(calls["overlap"]) == 0
+    assert len(calls["ceiling"]) == 0
+    dims_cand, dims_ems = calls["dims"][0]
+    assert dims_cand is cand
+    assert dims_ems is ems_box  # state.ems[cand.container_idx][cand.ems_id] を渡す契約
+    for key in calls:
+        calls[key].clear()
+
+    masks.evaluate_stage(state, cand, PP0, MaskStage.INCLUSION)
+    assert len(calls["inclusion"]) == 1
+    assert len(calls["dims"]) == 0
+    assert len(calls["overlap"]) == 0
+    assert len(calls["ceiling"]) == 0
+    incl_space, incl_cand, incl_pp = calls["inclusion"][0]
+    assert incl_space is space  # state.containers[cand.container_idx]
+    assert incl_cand is cand
+    assert incl_pp is PP0
+    for key in calls:
+        calls[key].clear()
+
+    masks.evaluate_stage(state, cand, PP0, MaskStage.OVERLAP)
+    assert len(calls["overlap"]) == 1
+    assert len(calls["dims"]) == 0
+    assert len(calls["inclusion"]) == 0
+    assert len(calls["ceiling"]) == 0
+    ov_state, ov_cand, ov_tol = calls["overlap"][0]
+    assert ov_state is state
+    assert ov_cand is cand
+    assert ov_tol == -PP0.internal_extra  # tol=-pp.internal_extra
+    for key in calls:
+        calls[key].clear()
+
+    masks.evaluate_stage(state, cand, PP0, MaskStage.CEILING)
+    assert len(calls["ceiling"]) == 1
+    assert len(calls["dims"]) == 0
+    assert len(calls["inclusion"]) == 0
+    assert len(calls["overlap"]) == 0
+    ceil_space, ceil_cand, ceil_pp = calls["ceiling"][0]
+    assert ceil_space is space  # state.containers[cand.container_idx]
+    assert ceil_cand is cand
+    assert ceil_pp is PP0
+
+
+def test_evaluate_stage_returns_same_candidate_object():
+    from src.packing_core.masks import MaskStage, evaluate_stage
+
+    space = _unit_cube_space()
+    cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+    state = _make_state(
+        [space], {0: []}, {0: [_make_ems([0.0, 0.0, 0.0], [0.6, 0.6, 0.6])]}
+    )
+
+    result = evaluate_stage(state, cand, PP0, MaskStage.INCLUSION)
+
+    assert result is cand
+
+
+def test_evaluate_stage_pass_sets_feasible_true_and_empty_reason():
+    from src.packing_core.masks import MaskStage, evaluate_stage
+
+    space = _unit_cube_space()
+    osize = DEFAULT_OSIZE.copy()
+
+    # (stage, pos_rel, cand_osize, ems_list, placed_list)
+    cases = [
+        (MaskStage.DIMS, [0.5, 0.5, 0.5], osize, [_make_ems([0.0, 0.0, 0.0], list(osize))], []),
+        (MaskStage.INCLUSION, [0.5, 0.5, 0.5], osize, [], []),
+        (MaskStage.OVERLAP, [0.5, 0.5, 0.5], osize, [], []),
+        (MaskStage.CEILING, [0.5, 0.5, 0.5], osize, [], []),
+    ]
+
+    for stage, pos_rel, cand_osize, ems_list, placed_list in cases:
+        cand = _make_candidate(pos_rel, cand_osize, container_idx=0, ems_id=0)
+        state = _make_state([space], {0: placed_list}, {0: ems_list})
+
+        result = evaluate_stage(state, cand, PP0, stage)
+
+        assert result is cand
+        assert cand.feasible is True
+        assert cand.reject_reason == ""
+
+
+def test_evaluate_stage_fail_sets_reject_reason_per_stage():
+    from src.packing_core.masks import MaskStage, evaluate_stage
+
+    space = _unit_cube_space()
+
+    # DIMS: x軸のみ osize が EMS 寸法を超える。
+    cand_dims = _make_candidate([0.5, 0.5, 0.5], [0.3, 0.2, 0.2], container_idx=0, ems_id=0)
+    state_dims = _make_state(
+        [space], {0: []}, {0: [_make_ems([0.0, 0.0, 0.0], [0.2, 0.2, 0.2])]}
+    )
+
+    # INCLUSION: 1cm はみ出し（既存 test_inclusion_protrusion_x_rejected と同じ幾何）。
+    cand_inclusion = _make_candidate([0.91, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+    state_inclusion = _make_state([space], {0: []}, {0: []})
+
+    # OVERLAP: 既配置と全面的に重なる候補。
+    placed = _make_placed([0.4, 0.4, 0.4], [0.6, 0.6, 0.6])
+    cand_overlap = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+    state_overlap = _make_state([space], {0: [placed]}, {0: []})
+
+    # CEILING: わずかな違反（既存 test_ceiling_slight_violation_rejected と同じ幾何）。
+    cand_ceiling = _make_candidate([0.5, 0.5, 0.878], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+    state_ceiling = _make_state([space], {0: []}, {0: []})
+
+    cases = [
+        (MaskStage.DIMS, cand_dims, state_dims, "dims"),
+        (MaskStage.INCLUSION, cand_inclusion, state_inclusion, "inclusion"),
+        (MaskStage.OVERLAP, cand_overlap, state_overlap, "overlap"),
+        (MaskStage.CEILING, cand_ceiling, state_ceiling, "ceiling"),
+    ]
+
+    for stage, cand, state, reason in cases:
+        result = evaluate_stage(state, cand, PP0, stage)
+
+        assert result is cand
+        assert cand.feasible is False
+        assert cand.reject_reason == reason
+
+
+def test_evaluate_stage_invalid_stage_raises_value_error():
+    from src.packing_core.masks import evaluate_stage
+
+    space = _unit_cube_space()
+    cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+    state = _make_state([space], {0: []}, {0: []})
+
+    with pytest.raises(ValueError):
+        evaluate_stage(state, cand, PP0, 99)
+
+
+def test_evaluate_stage_l_path_raises_not_implemented():
+    """T-015時点では L_PATH の推測実装・暫定合格を行わず NotImplementedError を送出する
+    （T-016で l_path_sweep_boxes/check_l_path を実装、T-017で evaluate_stage へ接続）。"""
+    from src.packing_core.masks import MaskStage, evaluate_stage
+
+    space = _unit_cube_space()
+    cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+    state = _make_state([space], {0: []}, {0: []})
+
+    with pytest.raises(NotImplementedError):
+        evaluate_stage(state, cand, PP0, MaskStage.L_PATH)
+
+
+def test_evaluate_stage_dims_resolves_ems_via_ems_id():
+    """DIMS段階が state.ems[cand.container_idx][cand.ems_id] のindex契約でEMSを解決する
+    こと。複数コンテナ・複数EMSを用意し、別コンテナまたは別indexのEMSでは合格しない
+    fixtureで、正しいindexの組み合わせでのみ合格することを確認する。"""
+    from src.packing_core.masks import MaskStage, evaluate_stage
+
+    space0 = _unit_cube_space()
+    space1 = _unit_cube_space()
+    small = _make_ems([0.0, 0.0, 0.0], [0.1, 0.1, 0.1])
+    big = _make_ems([0.0, 0.0, 0.0], [0.5, 0.5, 0.5])
+
+    # container 0: [small, small] / container 1: [small, big]。big は [1][1] のみに存在。
+    ems = {0: [small, small], 1: [small, big]}
+    placed = {0: [], 1: []}
+    state = _make_state([space0, space1], placed, ems)
+
+    osize = np.array([0.5, 0.5, 0.5], dtype=np.float64)
+
+    cand_correct = _make_candidate([0.5, 0.5, 0.5], osize, container_idx=1, ems_id=1)
+    result_correct = evaluate_stage(state, cand_correct, PP0, MaskStage.DIMS)
+    assert result_correct is cand_correct
+    assert cand_correct.feasible is True
+    assert cand_correct.reject_reason == ""
+
+    # 誤った container_idx（big が存在しない container 0）では osize=0.5 が small(0.1) に
+    # 収まらず不合格になる。fixture が index 契約を実際に判別できることの担保。
+    cand_wrong_container = _make_candidate([0.5, 0.5, 0.5], osize, container_idx=0, ems_id=1)
+    result_wrong_container = evaluate_stage(state, cand_wrong_container, PP0, MaskStage.DIMS)
+    assert result_wrong_container.feasible is False
+    assert result_wrong_container.reject_reason == "dims"
+
+    # 誤った ems_id（container 1 の index 0 は small）でも同様に不合格になる。
+    cand_wrong_ems = _make_candidate([0.5, 0.5, 0.5], osize, container_idx=1, ems_id=0)
+    result_wrong_ems = evaluate_stage(state, cand_wrong_ems, PP0, MaskStage.DIMS)
+    assert result_wrong_ems.feasible is False
+    assert result_wrong_ems.reject_reason == "dims"
+
+
+def test_evaluate_stage_dims_out_of_range_ems_id_raises_index_error():
+    """範囲外の ems_id に対し、evaluate_stage が独自に握りつぶさず自然な IndexError を
+    送出すること（別の例外への変換や暫定合格は行わない）。"""
+    from src.packing_core.masks import MaskStage, evaluate_stage
+
+    space = _unit_cube_space()
+    ems_list = [
+        _make_ems([0.0, 0.0, 0.0], [0.1, 0.1, 0.1]),
+        _make_ems([0.0, 0.0, 0.0], [0.2, 0.2, 0.2]),
+    ]
+    state = _make_state([space], {0: []}, {0: ems_list})
+    cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=5)
+
+    with pytest.raises(IndexError):
+        evaluate_stage(state, cand, PP0, MaskStage.DIMS)
+
+
+# --- prefilter_dims（T-015確定） ----------------------------------------------------------
+
+
+def test_prefilter_dims_fits_exactly_passes():
+    """osize が EMS 寸法と各軸一致（境界一致）なら合格。"""
+    from src.packing_core.masks import prefilter_dims
+
+    ems = _make_ems([0.0, 0.0, 0.0], [0.3, 0.4, 0.5])
+    cand = _make_candidate([0.15, 0.2, 0.25], [0.3, 0.4, 0.5])
+
+    assert prefilter_dims(cand, ems) is True
+
+
+def test_prefilter_dims_exceeds_ems_rejected():
+    """いずれかの軸で osize が EMS 寸法を超えれば不合格（ここでは x 軸のみ超過）。"""
+    from src.packing_core.masks import prefilter_dims
+
+    ems = _make_ems([0.0, 0.0, 0.0], [0.3, 0.4, 0.5])
+    cand = _make_candidate([0.155, 0.2, 0.25], [0.31, 0.4, 0.5])
+
+    assert prefilter_dims(cand, ems) is False
+
+
+# --- check_overlap（T-015確定） -----------------------------------------------------------
+
+
+def test_check_overlap_no_placed_passes():
+    """同一コンテナに既配置がなければ合格。他コンテナの配置物と重なっていても対象外
+    （同一コンテナの placed だけを対象とする契約）。"""
+    from src.packing_core.masks import check_overlap
+
+    space0 = _unit_cube_space()
+    space1 = _unit_cube_space()
+    other_container_placed = _make_placed([0.4, 0.4, 0.4], [0.6, 0.6, 0.6])
+    state = _make_state(
+        [space0, space1], {0: [], 1: [other_container_placed]}, {0: [], 1: []}
+    )
+    cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+
+    assert check_overlap(state, cand, tol=-PP0.internal_extra) is True
+
+
+def test_check_overlap_gap_within_internal_extra_rejected():
+    """既配置との隙間が internal_extra(5mm) 未満なら tol=-internal_extra で交差扱いとなり
+    不合格（3mm の重なり、および 3mm の隙間のいずれも不合格）。"""
+    from src.packing_core.masks import check_overlap
+
+    space = _unit_cube_space()
+    placed = _make_placed([0.4, 0.4, 0.4], [0.6, 0.6, 0.6])
+    state = _make_state([space], {0: [placed]}, {0: []})
+    osize = np.array([0.2, 0.2, 0.2], dtype=np.float64)
+
+    # 3mm重なり: center_x=0.697 → x∈[0.597,0.797]（placed x上端0.6と3mm重なり）。
+    cand_overlap_3mm = _make_candidate([0.697, 0.5, 0.5], osize, container_idx=0, ems_id=0)
+    assert check_overlap(state, cand_overlap_3mm, tol=-PP0.internal_extra) is False
+
+    # 隙間3mm（<internal_extra=5mm）: center_x=0.703 → x∈[0.603,0.803]、隙間0.003。
+    cand_gap_3mm = _make_candidate([0.703, 0.5, 0.5], osize, container_idx=0, ems_id=0)
+    assert check_overlap(state, cand_gap_3mm, tol=-PP0.internal_extra) is False
+
+
+def test_check_overlap_sufficient_gap_passes():
+    """隙間が internal_extra(5mm) 以上なら合格（8mm 隙間、および 5mm 境界のいずれも合格）。"""
+    from src.packing_core.masks import check_overlap
+
+    space = _unit_cube_space()
+    placed = _make_placed([0.4, 0.4, 0.4], [0.6, 0.6, 0.6])
+    state = _make_state([space], {0: [placed]}, {0: []})
+    osize = np.array([0.2, 0.2, 0.2], dtype=np.float64)
+
+    # 隙間8mm: center_x=0.708 → x∈[0.608,0.808]、隙間0.008。
+    cand_gap_8mm = _make_candidate([0.708, 0.5, 0.5], osize, container_idx=0, ems_id=0)
+    assert check_overlap(state, cand_gap_8mm, tol=-PP0.internal_extra) is True
+
+    # 境界: 隙間5mm=internal_extra: center_x=0.705 → x∈[0.605,0.805]、隙間0.005。
+    cand_gap_5mm = _make_candidate([0.705, 0.5, 0.5], osize, container_idx=0, ems_id=0)
+    assert check_overlap(state, cand_gap_5mm, tol=-PP0.internal_extra) is True
