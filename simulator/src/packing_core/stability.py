@@ -1,13 +1,17 @@
 """幾何安定性プロキシ（詳細仕様書 §4.6、T-020〜T-021）。
 
-T-020 時点では `support_ratio`／`max_step_below`／`soft_below_ratio` の3関数のみを実装する。
-`support_polygon`／`cg_margin`（monotone chain・凸包）は T-021 の責務であり、本モジュールでは
-未定義のまま据え置く（stub・暫定固定値は置かない）。
+T-020 では `support_ratio`／`max_step_below`／`soft_below_ratio` の3関数を実装した。
+T-021 では `support_polygon`／`cg_margin`（monotone chain・凸包）を追加する。
 
 いずれの関数も候補底面AABBのXY footprint（`container_space.cells_of_aabb` が返す格子セル範囲）
 を対象に、`space.height`（現在の積み上げ上端。床は `floor_z` で初期化済み、§4.2 T-008）を
 参照する。格子は絞り込み専用であり最終判定には使わないという§2規約のもと、本モジュールは
 あくまで特徴量・スコア用のプロキシ値を返す。
+
+`support_polygon` は仕様書 §4.6 v1.14 追補のとおり、支持セルが表す矩形接触パッチ（各セルの
+生矩形を候補底面AABBおよびコンテナ内壁XYでクリップしたもの）の全頂点から凸包を構成する
+（セル中心点のみの凸包では候補底面の実境界より半セル内側になり、平床・半分支持のテスト
+期待値を満たせないため。詳細は `docs/実装詳細仕様書.md` §4.6 更新履歴 v1.14 参照）。
 """
 from typing import TYPE_CHECKING
 
@@ -156,3 +160,186 @@ def soft_below_ratio(state: "PackingState", cand: Candidate) -> float:
 
     numer = int(np.count_nonzero(supported & soft_top[x_slice, y_slice]))
     return float(numer) / float(denom)
+
+
+def _convex_hull(points: np.ndarray) -> np.ndarray:
+    """点集合から Andrew monotone chain で凸包を構築する（T-021の私有ヘルパ）。
+
+    Args:
+        points: 点集合。shape (N, 2), float64。(x, y) 辞書順ソート済み・重複なしを前提とする
+            （`np.unique(pts, axis=0)` の出力はこの前提を満たす）。
+
+    Returns:
+        反時計回りの凸包頂点。shape (K, 2), float64。始点は末尾に重複させない。辞書順最小の
+        頂点が先頭に来る。`N==0` なら shape (0,2)、`N==1` なら shape (1,2)、`N==2` または
+        全点共線なら両端2点。cross積が `EPS_GEOM` 以下の共線中間点は除去し端点のみ残す。
+
+    Raises:
+        なし。
+    """
+    n = points.shape[0]
+    if n <= 2:
+        return np.array(points, dtype=np.float64).reshape(n, 2)
+
+    def _cross(o: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+        return float((a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]))
+
+    lower: list = []
+    for p in points:
+        while len(lower) >= 2 and _cross(lower[-2], lower[-1], p) <= EPS_GEOM:
+            lower.pop()
+        lower.append(p)
+
+    upper: list = []
+    for p in points[::-1]:
+        while len(upper) >= 2 and _cross(upper[-2], upper[-1], p) <= EPS_GEOM:
+            upper.pop()
+        upper.append(p)
+
+    hull = lower[:-1] + upper[:-1]
+    return np.array(hull, dtype=np.float64).reshape(len(hull), 2)
+
+
+def _cg_margin_from_polygon(polygon: np.ndarray, point: np.ndarray) -> float:
+    """凸多角形境界までの符号付き距離を返す（T-021の私有ヘルパ）。
+
+    Args:
+        polygon: 反時計回りの凸包頂点。shape (K, 2), float64。
+        point: 対象点（重心XY投影）。shape (2,), float64。
+
+    Returns:
+        `K < 3` のとき `float("-inf")`。それ以外は、全辺で `cross(edge, point - vertex) >=
+        -EPS_GEOM` を満たせば内側/境界、いずれかの辺で満たさなければ外側と判定する。境界までの
+        距離は全辺の有限線分への最短ユークリッド距離（射影係数は `[0,1]` にクランプ）。
+        最短距離が `EPS_GEOM` 以下なら `0.0`、内側なら `+距離`、外側なら `-距離`。Python `float`。
+
+    Raises:
+        なし。
+    """
+    k = polygon.shape[0]
+    if k < 3:
+        return float("-inf")
+
+    p = np.asarray(point, dtype=np.float64)
+    inside = True
+    min_dist = float("inf")
+    for idx in range(k):
+        a = polygon[idx]
+        b = polygon[(idx + 1) % k]
+        edge = b - a
+        cross_val = float(edge[0] * (p[1] - a[1]) - edge[1] * (p[0] - a[0]))
+        if cross_val < -EPS_GEOM:
+            inside = False
+
+        seg_len_sq = float(np.dot(edge, edge))
+        if seg_len_sq <= EPS_GEOM:
+            dist = float(np.linalg.norm(p - a))
+        else:
+            t = float(np.dot(p - a, edge) / seg_len_sq)
+            t = min(1.0, max(0.0, t))
+            proj = a + t * edge
+            dist = float(np.linalg.norm(p - proj))
+        min_dist = min(min_dist, dist)
+
+    if min_dist <= EPS_GEOM:
+        return 0.0
+    return min_dist if inside else -min_dist
+
+
+def support_polygon(state: "PackingState", cand: Candidate) -> np.ndarray:
+    """候補を支持するセルから支持凸包を生成する（詳細仕様書 §4.6 v1.14追補）。
+
+    支持セル条件は `support_ratio` と完全に同じ
+    （`height[i, j] >= candidate_bottom_z - TOL_CONTACT`）。各支持セルについて、格子上の
+    生矩形 `[inner_min_rel + i*cell, inner_min_rel + (i+1)*cell]`（j軸も同様）を、候補底面
+    AABBのXY範囲とコンテナ内壁XY範囲（`inner_min_rel`/`inner_max_rel`）の両方でクリップし、
+    クリップ後に正の面積を持つセルの4隅を点集合へ加える。同一点は `np.unique(..., axis=0)`
+    で除去し、(x, y) 辞書順に並べたうえで `_convex_hull` により決定論的に凸包を構築する。
+
+    Args:
+        state: 現在の `PackingState`。
+        cand: 対象の配置候補。
+
+    Returns:
+        支持凸包の頂点。反時計回り、辞書順最小の頂点が先頭、始点を末尾に重複させない。
+        shape (K, 2), float64。支持セルが0件（空footprint含む）の場合は
+        `np.empty((0, 2), dtype=np.float64)`。scipy・shapely等の外部幾何ライブラリは使わない。
+
+    Raises:
+        ValueError: `cand.container_idx` が範囲外の場合。`cand.osize` の要素が非正の場合。
+    """
+    space, x_slice, y_slice, sub, bottom_z = _footprint(state, cand)
+    if sub.size == 0:
+        return np.empty((0, 2), dtype=np.float64)
+
+    supported = sub >= (bottom_z - TOL_CONTACT)
+    local_i, local_j = np.nonzero(supported)
+    if local_i.size == 0:
+        return np.empty((0, 2), dtype=np.float64)
+
+    pos_rel = np.asarray(cand.pos_rel, dtype=np.float64)
+    osize = np.asarray(cand.osize, dtype=np.float64)
+    amin, amax = aabb_from_center(pos_rel, osize)
+
+    cell = space.cell
+    inner_min = space.inner_min_rel
+    inner_max = space.inner_max_rel
+
+    global_i = x_slice.start + local_i
+    global_j = y_slice.start + local_j
+
+    rx0 = inner_min[0] + global_i * cell
+    rx1 = inner_min[0] + (global_i + 1) * cell
+    ry0 = inner_min[1] + global_j * cell
+    ry1 = inner_min[1] + (global_j + 1) * cell
+
+    clip_x_min = max(float(amin[0]), float(inner_min[0]))
+    clip_x_max = min(float(amax[0]), float(inner_max[0]))
+    clip_y_min = max(float(amin[1]), float(inner_min[1]))
+    clip_y_max = min(float(amax[1]), float(inner_max[1]))
+
+    x0 = np.maximum(rx0, clip_x_min)
+    x1 = np.minimum(rx1, clip_x_max)
+    y0 = np.maximum(ry0, clip_y_min)
+    y1 = np.minimum(ry1, clip_y_max)
+
+    valid = (x1 - x0 > EPS_GEOM) & (y1 - y0 > EPS_GEOM)
+    if not np.any(valid):
+        return np.empty((0, 2), dtype=np.float64)
+
+    x0, x1 = x0[valid], x1[valid]
+    y0, y1 = y0[valid], y1[valid]
+    pts = np.concatenate(
+        [
+            np.stack([x0, y0], axis=1),
+            np.stack([x1, y0], axis=1),
+            np.stack([x1, y1], axis=1),
+            np.stack([x0, y1], axis=1),
+        ],
+        axis=0,
+    ).astype(np.float64)
+
+    pts = np.unique(pts, axis=0)
+    return _convex_hull(pts)
+
+
+def cg_margin(state: "PackingState", cand: Candidate) -> float:
+    """候補重心XYから支持凸包境界までの符号付き距離を返す（詳細仕様書 §4.6）。
+
+    候補重心XYは `cand.pos_rel[:2]`。`support_polygon` の頂点数が `K < 3`（点・線支持）
+    のときは `float("-inf")`（=不安定）。凸包内側では正、境界上では0、外側では負。
+
+    Args:
+        state: 現在の `PackingState`。
+        cand: 対象の配置候補。
+
+    Returns:
+        符号付き距離。内側 `+距離`、境界 `0.0`、外側 `-距離`、`K<3` は `float("-inf")`。
+        Python `float`。
+
+    Raises:
+        ValueError: `cand.container_idx` が範囲外の場合。`cand.osize` の要素が非正の場合。
+    """
+    polygon = support_polygon(state, cand)
+    point = np.asarray(cand.pos_rel[:2], dtype=np.float64)
+    return _cg_margin_from_polygon(polygon, point)
