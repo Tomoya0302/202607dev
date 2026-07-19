@@ -66,6 +66,14 @@ def _make_space(
         floor_z=floor,
         ceil_z=ceil,
         height=floor.copy(),
+        # T-016B: これらのテストは world_to_rel/rel_to_world のみを検証し path_* は
+        # 参照しないため、他フィールドと同様に自己無矛盾なダミー値で埋める。
+        path_entry_y_rel=float(imin[1]),
+        path_lane_x_min_geom_rel=float(imin[0]),
+        path_lane_x_max_geom_rel=float(imax[0]),
+        path_mid_resting_z_rel=float(imin[2]),
+        path_mid_ceiling_z_rel=float(imax[2]),
+        path_obstacle_boxes_rel=(),
     )
 
 

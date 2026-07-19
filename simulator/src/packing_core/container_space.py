@@ -33,6 +33,20 @@ class ContainerSpace:
         ceil_z: 格子セルごとの天井高さ。内壁天井と棚下面の min を反映する。
             shape (nx, ny), float64。
         height: 現在の積み上げ上端。shape (nx, ny), float64。`bake_placed`（T-008）で更新。
+        path_entry_y_rel: L字経路の入口面（相対y）。`= -width/2`（A15、T-016B）。
+        path_lane_x_min_geom_rel: 入口レーンxクランプ下限の幾何基底（candidate/validator
+            設定に非依存。使用時に `+half_x+pp.start_margin` を合成する。A15、T-016B）。
+        path_lane_x_max_geom_rel: 入口レーンxクランプ上限の幾何基底（candidate/validator
+            設定に非依存。使用時に `-half_x-pp.start_margin` を合成する。A15、T-016B）。
+        path_mid_resting_z_rel: 棚上面相当の直置き判定面（`height/2+thickness+buffer`）。
+            もう一方の直置き面は `inner_min_rel[2]`（`==thickness`）と恒等的に一致するため
+            新規フィールドを持たない（A15、T-016B）。
+        path_mid_ceiling_z_rel: 棚下面相当の頭打ち判定面（`height/2+buffer`）。もう一方の
+            天井面は `inner_max_rel[2]`（`==height+buffer-thickness`）と恒等的に一致するため
+            新規フィールドを持たない（A15、T-016B）。
+        path_obstacle_boxes_rel: L字経路判定の障害物raw AABB（相対、クリップ前）。小棚
+            （常時）＋大棚（`cdict["shelf"] is True` のときのみ）の順。`shelf_boxes`
+            （クリップ後）とは別物。build時に1回だけ構築する固定キャッシュ（A15、T-016B）。
     """
 
     index: int
@@ -45,6 +59,12 @@ class ContainerSpace:
     floor_z: np.ndarray
     ceil_z: np.ndarray
     height: np.ndarray
+    path_entry_y_rel: float
+    path_lane_x_min_geom_rel: float
+    path_lane_x_max_geom_rel: float
+    path_mid_resting_z_rel: float
+    path_mid_ceiling_z_rel: float
+    path_obstacle_boxes_rel: tuple[tuple[Vec3, Vec3], ...]
 
 
 def _axis_alignment(normal_rel: np.ndarray) -> tuple[int, float] | None:
@@ -142,6 +162,20 @@ def _build_shelf_boxes(
             boxes.append(main_clipped)
 
     return boxes
+
+
+def _build_path_obstacle_boxes(cdict: dict, buffer: float) -> tuple[tuple[Vec3, Vec3], ...]:
+    """L字経路の障害物raw AABB（クリップ前）を構築する（interface_notes.md §L.3、T-016B）。
+
+    小棚（常時計算）→大棚（`cdict["shelf"] is True` のときのみ）の順。公式PyBulletの
+    衝突判定（`getClosestPoints`）は棚bodyそのものに対して行われるため、内壁AABBへ
+    クリップした `shelf_boxes` ではなく raw AABB を使う（クリップは片側安全性
+    `proxy_pass ⇒ official_pass` を崩し得るため）。
+    """
+    boxes: list[tuple[np.ndarray, np.ndarray]] = [_small_shelf_raw_aabb(cdict, buffer)]
+    if cdict["shelf"] is True:
+        boxes.append(_main_shelf_raw_aabb(cdict, buffer))
+    return tuple(boxes)
 
 
 def _cell_centers(
@@ -276,6 +310,20 @@ def build_container_space(cdict: dict, index: int, cell: float) -> ContainerSpac
     floor_z, ceil_z = _build_floor_ceil(inner_min_rel, inner_max_rel, cut_planes, shelf_boxes, cell)
     height = floor_z.copy()
 
+    # T-016B: L字経路用派生フィールド（A15確定）。出典: validator.py::check_transport_path
+    # L96-97,103-112（docs/実装詳細仕様書.md §4.2「T-016B: L字経路用派生フィールド」の表）。
+    length = float(cdict["length"])
+    width = float(cdict["width"])
+    height_dim = float(cdict["height"])
+    thickness = float(cdict["thickness"])
+    cut_x = float(cdict["cut_x"])
+    path_entry_y_rel = -width / 2.0
+    path_lane_x_min_geom_rel = -length / 2.0 + thickness + cut_x
+    path_lane_x_max_geom_rel = length / 2.0 - thickness
+    path_mid_resting_z_rel = height_dim / 2.0 + thickness + buffer
+    path_mid_ceiling_z_rel = height_dim / 2.0 + buffer
+    path_obstacle_boxes_rel = _build_path_obstacle_boxes(cdict, buffer)
+
     return ContainerSpace(
         index=index,
         offset_x=float(offset_x),
@@ -287,6 +335,12 @@ def build_container_space(cdict: dict, index: int, cell: float) -> ContainerSpac
         floor_z=floor_z,
         ceil_z=ceil_z,
         height=height,
+        path_entry_y_rel=path_entry_y_rel,
+        path_lane_x_min_geom_rel=path_lane_x_min_geom_rel,
+        path_lane_x_max_geom_rel=path_lane_x_max_geom_rel,
+        path_mid_resting_z_rel=path_mid_resting_z_rel,
+        path_mid_ceiling_z_rel=path_mid_ceiling_z_rel,
+        path_obstacle_boxes_rel=path_obstacle_boxes_rel,
     )
 
 

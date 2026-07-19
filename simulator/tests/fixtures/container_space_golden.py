@@ -61,6 +61,50 @@ def _container_relative_points_n_vecs(length, height, width, thickness, cut_x, c
     return rel_points, rel_n_vecs
 
 
+def build_cdict_from_raw_config(raw_config: dict, offset_x: float, index: int = 0) -> dict:
+    """任意の `container_raw_config`（T-016A l_path_golden_v1 の `length`/`width`/`height`/
+    `thickness`/`cut_x`/`cut_y`/`buffer`/`require_shelf`）から cdict を構築する
+    （T-016Bゴールデン照合テスト専用。`build_fixture_ab_cdict` の一般化）。
+
+    `points`/`n_vecs` は公式 `write_open_cut_corner_cup_obj`/`aff` の直接呼び出しにより
+    取得する（`container_space.py` は未使用）。ゴールデンの `container_raw_config` は
+    `cut_x`/`cut_y` を常に正で保持するため（`safety_margin_boundary`/`random_scene` を含む
+    全カテゴリで生成時に保証済み）、公式関数の `cut_x<=0` ガードには抵触しない。
+    """
+    length = float(raw_config["length"])
+    width = float(raw_config["width"])
+    height = float(raw_config["height"])
+    thickness = float(raw_config["thickness"])
+    cut_x = float(raw_config["cut_x"])
+    cut_y = float(raw_config["cut_y"])
+    buffer = float(raw_config["buffer"])
+    shelf = bool(raw_config["require_shelf"])
+
+    rel_points, rel_n_vecs = _container_relative_points_n_vecs(
+        length, height, width, thickness, cut_x, cut_y, buffer
+    )
+    points_world = [(px + offset_x, py, pz) for px, py, pz in rel_points]
+
+    return {
+        "index": index,
+        "length": length,
+        "width": width,
+        "height": height,
+        "cut_x": cut_x,
+        "cut_y": cut_y,
+        "thickness": thickness,
+        "center": (offset_x, 0.0, height / 2.0 + buffer),
+        "n_vecs": rel_n_vecs,
+        "points": points_world,
+        "volume": official_volume_formula(
+            length, width, height, thickness, cut_x, cut_y, buffer, shelf
+        ),
+        "shelf": shelf,
+        "is_prioritized": False,
+        "packed_items": [],
+    }
+
+
 def build_fixture_ab_cdict(index: int = 0, spacing: float = 2.0, shelf: bool = False) -> dict:
     """Fixture A（shelf=False）／ Fixture B（shelf=True）の cdict を構築する。
 

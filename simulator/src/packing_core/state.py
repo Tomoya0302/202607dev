@@ -280,7 +280,14 @@ def _global_settings_key() -> tuple:
 
 
 def _container_geometry_key(space: ContainerSpace) -> tuple:
-    """コンテナ単位の geometry キー（丸めない）。`geometry_key` 第2要素の各要素（§4.4）。"""
+    """コンテナ単位の geometry キー（丸めない）。`geometry_key` 第2要素の各要素（§4.4）。
+
+    T-016B（A15、interface_notes.md §L.5）: `height`/`buffer` の個別値は既存キー要素
+    （`inner_min_rel`/`inner_max_rel`/クリップ後`shelf_boxes`/`cut_planes`）から一般に
+    一意復元できることを証明できなかった（クリップ後`shelf_boxes`が退化・空集合になり得る
+    edge caseで分離情報が失われるため）。安全側の最小修正として、`path_*` 6フィールドを
+    直接キーへ追加する（間接的な復元可能性に依拠しない）。
+    """
 
     def _vec(a: np.ndarray) -> tuple:
         return tuple(float(x) for x in a)
@@ -292,6 +299,12 @@ def _container_geometry_key(space: ContainerSpace) -> tuple:
         float(space.cell),
         tuple((_vec(bmin), _vec(bmax)) for bmin, bmax in space.shelf_boxes),
         tuple((_vec(normal_rel), float(d)) for normal_rel, d in space.cut_planes),
+        float(space.path_entry_y_rel),
+        float(space.path_lane_x_min_geom_rel),
+        float(space.path_lane_x_max_geom_rel),
+        float(space.path_mid_resting_z_rel),
+        float(space.path_mid_ceiling_z_rel),
+        tuple((_vec(bmin), _vec(bmax)) for bmin, bmax in space.path_obstacle_boxes_rel),
     )
 
 

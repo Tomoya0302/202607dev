@@ -49,6 +49,14 @@ def _box_space(inner_min, inner_max, cell):
         floor_z=floor_z,
         ceil_z=ceil_z,
         height=floor_z.copy(),
+        # T-016B: inclusion/ceiling/overlap 系テストは path_* を参照しないため、
+        # 軸整列直方体（cut_x=0, shelf無し）相当の自己無矛盾な値で埋める。
+        path_entry_y_rel=float(imin[1]),
+        path_lane_x_min_geom_rel=float(imin[0]),
+        path_lane_x_max_geom_rel=float(imax[0]),
+        path_mid_resting_z_rel=float(imin[2]),
+        path_mid_ceiling_z_rel=float(imax[2]),
+        path_obstacle_boxes_rel=(),
     )
 
 
@@ -728,3 +736,431 @@ def test_check_overlap_sufficient_gap_passes():
     # 境界: 隙間5mm=internal_extra: center_x=0.705 → x∈[0.605,0.805]、隙間0.005。
     cand_gap_5mm = _make_candidate([0.705, 0.5, 0.5], osize, container_idx=0, ems_id=0)
     assert check_overlap(state, cand_gap_5mm, tol=-PP0.internal_extra) is True
+
+
+# --- T-016B: l_path_sweep_boxes / check_l_path -----------------------------------------
+#
+# 確定した判定式（v1.13、§4.5「L字経路：プロキシ確定仕様」、出典
+# validator.py::PlacementValidator.check_transport_path L96-99,101-137, 転記元HEAD abf630f）:
+#     lane_x = clamp(target_x, path_lane_x_min_geom_rel+half_x+start_margin,
+#                              path_lane_x_max_geom_rel-half_x-start_margin)
+#     resting_surfaces = (inner_min_rel[2], path_mid_resting_z_rel)
+#     ceiling_surfaces = (path_mid_ceiling_z_rel, inner_max_rel[2])
+#     effective_start_z: 直置き面直上0〜0.05m(RESTING_SNAP_BAND)なら0、天井直前ならクリップ
+#     rel_z = min(inner_max_rel[2]-half_z-start_margin, target_z+effective_start_z)
+#     Yレグ: x=lane_x,z=rel_z固定でy: path_entry_y_rel -> target_y
+#     Xレグ: y=target_y,z=rel_z固定でx: lane_x -> target_x
+#     check_l_path (P4): 全レグ×全障害物で distance_sq=Σgap_i² > (safety_margin+EPS_GEOM)**2
+
+
+def _path_space(
+    inner_min, inner_max, cell,
+    entry_y, lane_x_min_geom, lane_x_max_geom, mid_resting_z, mid_ceiling_z,
+    obstacle_boxes=(),
+):
+    """`path_*` 6フィールドを明示指定できる `ContainerSpace`（l_path 専用テストヘルパ）。
+
+    `build_container_space` を経由せず、公式式の各分岐（直置きスナップ・天井クリップ・
+    レーンクランプ）を手計算で検証できるよう `path_mid_resting_z_rel`/`path_mid_ceiling_z_rel`
+    を内壁境界から独立に指定する。
+    """
+    from src.packing_core.container_space import ContainerSpace
+
+    imin = np.asarray(inner_min, dtype=np.float64)
+    imax = np.asarray(inner_max, dtype=np.float64)
+    size = imax - imin
+    nx = max(1, round(size[0] / cell))
+    ny = max(1, round(size[1] / cell))
+    floor_z = np.full((nx, ny), imin[2], dtype=np.float64)
+    ceil_z = np.full((nx, ny), imax[2], dtype=np.float64)
+    return ContainerSpace(
+        index=0,
+        offset_x=0.0,
+        inner_min_rel=imin,
+        inner_max_rel=imax,
+        cut_planes=[],
+        shelf_boxes=[],
+        cell=float(cell),
+        floor_z=floor_z,
+        ceil_z=ceil_z,
+        height=floor_z.copy(),
+        path_entry_y_rel=float(entry_y),
+        path_lane_x_min_geom_rel=float(lane_x_min_geom),
+        path_lane_x_max_geom_rel=float(lane_x_max_geom),
+        path_mid_resting_z_rel=float(mid_resting_z),
+        path_mid_ceiling_z_rel=float(mid_ceiling_z),
+        path_obstacle_boxes_rel=tuple(
+            (np.asarray(bmin, dtype=np.float64), np.asarray(bmax, dtype=np.float64))
+            for bmin, bmax in obstacle_boxes
+        ),
+    )
+
+
+def _baseline_path_space():
+    """遠方に直置き/天井面を置き、スナップ・クリップが発火しない基準空間。"""
+    return _path_space(
+        inner_min=[-1.0, -1.0, 0.0], inner_max=[1.0, 1.0, 2.0], cell=0.1,
+        entry_y=-1.0, lane_x_min_geom=-1.0, lane_x_max_geom=1.0,
+        mid_resting_z=10.0, mid_ceiling_z=10.0,
+    )
+
+
+def test_l_path_sweep_boxes_baseline_y_then_x_leg_geometry():
+    """クランプ・スナップ・クリップいずれも発火しない基準ケースでYレグ→Xレグの形状を検証する。"""
+    from src.packing_core.masks import l_path_sweep_boxes
+
+    space = _baseline_path_space()
+    pp = constants.PlacementParams(start_margin=0.0, start_z=0.08, ceiling_margin=0.018)
+    cand = _make_candidate([0.3, 0.5, 1.0], [0.2, 0.2, 0.2])
+
+    # lane_x = clamp(0.3, -1.0+0.1+0, 1.0-0.1-0) = 0.3（クランプなし）。
+    # 直置き・天井いずれのsurfaceも遠方(10.0)のためeffective_start_z=start_z=0.08。
+    # rel_z = min(2.0-0.1-0, 1.0+0.08) = 1.08。
+    (y_min, y_max), (x_min, x_max) = l_path_sweep_boxes(space, cand, pp)
+
+    np.testing.assert_allclose(y_min, [0.2, -1.1, 0.98])
+    np.testing.assert_allclose(y_max, [0.4, 0.6, 1.18])
+    # Xレグ: lane_x(0.3)==target_x(0.3) → スイープ長ゼロだが候補半幅を持つ非退化AABB。
+    np.testing.assert_allclose(x_min, [0.2, 0.4, 0.98])
+    np.testing.assert_allclose(x_max, [0.4, 0.6, 1.18])
+
+
+def test_l_path_sweep_boxes_lane_x_clamped_to_geom_bounds():
+    """target_x がレーン範囲外なら lane_x はクランプされ、Xレグはクランプ位置から実target_xまで伸びる。"""
+    from src.packing_core.masks import l_path_sweep_boxes
+
+    space = _baseline_path_space()
+    pp = constants.PlacementParams(start_margin=0.0, start_z=0.08, ceiling_margin=0.018)
+    cand = _make_candidate([5.0, 0.5, 1.0], [0.2, 0.2, 0.2])
+
+    # lane_x = clamp(5.0, -0.9, 0.9) = 0.9（上限クランプ）。z計算は基準ケースと同一。
+    (y_min, y_max), (x_min, x_max) = l_path_sweep_boxes(space, cand, pp)
+
+    np.testing.assert_allclose(y_min, [0.8, -1.1, 0.98])
+    np.testing.assert_allclose(y_max, [1.0, 0.6, 1.18])
+    np.testing.assert_allclose(x_min, [0.8, 0.4, 0.98])
+    np.testing.assert_allclose(x_max, [5.1, 0.6, 1.18])
+
+
+def test_l_path_sweep_boxes_resting_snap_sets_rel_z_to_target_z():
+    """直置き面直上0〜0.05m(RESTING_SNAP_BAND)ならeffective_start_z=0となりrel_z=target_zになる。"""
+    from src.packing_core.masks import l_path_sweep_boxes
+
+    space = _path_space(
+        inner_min=[-1.0, -1.0, 0.0], inner_max=[1.0, 1.0, 2.0], cell=0.1,
+        entry_y=-1.0, lane_x_min_geom=-1.0, lane_x_max_geom=1.0,
+        mid_resting_z=1.0, mid_ceiling_z=10.0,
+    )
+    pp = constants.PlacementParams(start_margin=0.0, start_z=0.08, ceiling_margin=0.018)
+    # target_z=1.12, half_z=0.1 → bottom_z=1.02。bottom_z-mid_resting_z(1.0)=0.02∈[0,0.05]→snap。
+    cand = _make_candidate([0.3, 0.5, 1.12], [0.2, 0.2, 0.2])
+
+    (y_min, y_max), _ = l_path_sweep_boxes(space, cand, pp)
+
+    assert y_min[2] == pytest.approx(1.12 - 0.1)
+    assert y_max[2] == pytest.approx(1.12 + 0.1)
+
+
+def test_l_path_sweep_boxes_ceiling_clip_reduces_effective_start_z():
+    """天井面直前ではeffective_start_zが頭打ち回避のためクリップされる。"""
+    from src.packing_core.masks import l_path_sweep_boxes
+
+    space = _path_space(
+        inner_min=[-1.0, -1.0, 0.0], inner_max=[1.0, 1.0, 2.0], cell=0.1,
+        entry_y=-1.0, lane_x_min_geom=-1.0, lane_x_max_geom=1.0,
+        mid_resting_z=0.5, mid_ceiling_z=1.5,
+    )
+    pp = constants.PlacementParams(start_margin=0.0, start_z=0.08, ceiling_margin=0.018)
+    # target_z=1.35, half_z=0.1 → top_z=1.45。clearance=1.5-1.45=0.05∈[0, 0.08+0.018=0.098)→クリップ。
+    # effective_start_z = max(0, 0.05-0.018-0.0005) = 0.0315。rel_z=min(1.9, 1.35+0.0315)=1.3815。
+    cand = _make_candidate([0.3, 0.5, 1.35], [0.2, 0.2, 0.2])
+
+    (y_min, y_max), _ = l_path_sweep_boxes(space, cand, pp)
+
+    expected_rel_z = 1.35 + 0.0315
+    assert y_min[2] == pytest.approx(expected_rel_z - 0.1, abs=1e-9)
+    assert y_max[2] == pytest.approx(expected_rel_z + 0.1, abs=1e-9)
+
+
+def test_l_path_sweep_boxes_does_not_mutate_inputs():
+    from src.packing_core.masks import l_path_sweep_boxes
+
+    space = _baseline_path_space()
+    pp = constants.PlacementParams()
+    cand = _make_candidate([0.3, 0.5, 1.0], [0.2, 0.2, 0.2])
+    pos_rel_before = cand.pos_rel.copy()
+    osize_before = cand.osize.copy()
+
+    l_path_sweep_boxes(space, cand, pp)
+
+    assert np.array_equal(cand.pos_rel, pos_rel_before)
+    assert np.array_equal(cand.osize, osize_before)
+
+
+def test_check_l_path_no_obstacles_passes():
+    from src.packing_core.masks import check_l_path
+
+    space = _baseline_path_space()
+    pp = constants.PlacementParams()
+    cand = _make_candidate([0.3, 0.5, 1.0], [0.2, 0.2, 0.2])
+    state = _make_state([space], {0: []}, {0: []})
+
+    assert check_l_path(state, cand, pp) is True
+
+
+def test_check_l_path_placed_item_boundary_rejected_beyond_boundary_passes():
+    """P4式の境界：gap==safety_marginは不合格、safety_margin+1e-6は合格（distance_sq比較）。"""
+    from src.packing_core.masks import check_l_path, l_path_sweep_boxes
+
+    space = _baseline_path_space()
+    pp = constants.PlacementParams()
+    cand = _make_candidate([0.3, 0.5, 1.0], [0.2, 0.2, 0.2])
+    (y_leg_min, y_leg_max), _ = l_path_sweep_boxes(space, cand, pp)
+
+    def _placed_with_gap(gap: float):
+        obs_min = np.array([y_leg_max[0] + gap, y_leg_min[1], y_leg_min[2]], dtype=np.float64)
+        obs_max = np.array([y_leg_max[0] + gap + 0.1, y_leg_max[1], y_leg_max[2]], dtype=np.float64)
+        return _make_placed(obs_min, obs_max)
+
+    state_boundary = _make_state([space], {0: [_placed_with_gap(pp.safety_margin)]}, {0: []})
+    assert check_l_path(state_boundary, cand, pp) is False
+
+    state_beyond = _make_state([space], {0: [_placed_with_gap(pp.safety_margin + 1e-6)]}, {0: []})
+    assert check_l_path(state_beyond, cand, pp) is True
+
+
+def test_check_l_path_uses_path_obstacle_boxes_rel():
+    """既配置が空でも `path_obstacle_boxes_rel`（棚のraw AABB）と競合すれば不合格になる。"""
+    from src.packing_core.masks import check_l_path, l_path_sweep_boxes
+
+    space_no_obstacle = _baseline_path_space()
+    pp = constants.PlacementParams()
+    cand = _make_candidate([0.3, 0.5, 1.0], [0.2, 0.2, 0.2])
+    (y_leg_min, y_leg_max), _ = l_path_sweep_boxes(space_no_obstacle, cand, pp)
+
+    blocking_obstacle = (
+        np.array([y_leg_min[0], y_leg_min[1], y_leg_min[2]], dtype=np.float64),
+        np.array([y_leg_max[0], y_leg_max[1], y_leg_max[2]], dtype=np.float64),
+    )
+    space_with_obstacle = _path_space(
+        inner_min=[-1.0, -1.0, 0.0], inner_max=[1.0, 1.0, 2.0], cell=0.1,
+        entry_y=-1.0, lane_x_min_geom=-1.0, lane_x_max_geom=1.0,
+        mid_resting_z=10.0, mid_ceiling_z=10.0,
+        obstacle_boxes=(blocking_obstacle,),
+    )
+    state_no_obstacle = _make_state([space_no_obstacle], {0: []}, {0: []})
+    state_with_obstacle = _make_state([space_with_obstacle], {0: []}, {0: []})
+
+    assert check_l_path(state_no_obstacle, cand, pp) is True
+    assert check_l_path(state_with_obstacle, cand, pp) is False
+
+
+def test_check_l_path_returns_bool_and_does_not_mutate_inputs():
+    from src.packing_core.masks import check_l_path
+
+    space = _baseline_path_space()
+    pp = constants.PlacementParams()
+    cand = _make_candidate([0.3, 0.5, 1.0], [0.2, 0.2, 0.2])
+    placed = _make_placed([0.9, 0.9, 0.9], [1.0, 1.0, 1.0])
+    state = _make_state([space], {0: [placed]}, {0: []})
+
+    pos_rel_before = cand.pos_rel.copy()
+    osize_before = cand.osize.copy()
+    inner_min_before = space.inner_min_rel.copy()
+    aabb_min_before = placed.aabb_min_rel.copy()
+
+    result = check_l_path(state, cand, pp)
+
+    assert isinstance(result, bool)
+    assert np.array_equal(cand.pos_rel, pos_rel_before)
+    assert np.array_equal(cand.osize, osize_before)
+    assert np.array_equal(space.inner_min_rel, inner_min_before)
+    assert np.array_equal(placed.aabb_min_rel, aabb_min_before)
+
+
+# --- T-016B: l_path_golden_v1（T-016Aゴールデン1,000件）照合契約テスト -----------------------
+#
+# DoD（§6 T-016B）: 危険な誤合格（proxy_pass and official_fail）0件、既知fixture
+# （無障害/Yレグ遮蔽/Xレグ遮蔽）の合否一致、proxy_acceptance_rate（分母=全1,000件中
+# official_pass 403件）が0.95以上。
+
+
+def _l_path_golden_path():
+    import pathlib
+
+    return (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "datasets" / "fixtures" / "l_path_golden_v1.jsonl"
+    )
+
+
+def _load_l_path_golden_cases():
+    import json
+
+    path = _l_path_golden_path()
+    with open(path, "r", encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def _golden_case_state_and_candidate(case, space_cache):
+    """ゴールデン1件から `(state, cand, pp)` を構築する（container_space_golden の
+    `write_open_cut_corner_cup_obj`/`aff` 直接呼び出しでcdictを再構成、build_container_space
+    は本番コードをそのまま使用）。"""
+    from src.packing_core import geometry
+    from src.packing_core.container_space import build_container_space
+    from src.packing_core.types import Candidate, PlacedItem
+
+    raw = case["container_raw_config"]
+    offset_x = float(case["container_origin_world"])
+    shape_key = (
+        raw["length"], raw["width"], raw["height"], raw["thickness"],
+        raw["cut_x"], raw["cut_y"], raw["buffer"], raw["require_shelf"],
+    )
+    space = space_cache.get((shape_key, offset_x))
+    if space is None:
+        cdict = golden.build_cdict_from_raw_config(raw, offset_x=offset_x)
+        space = build_container_space(cdict, index=0, cell=golden.CELL)
+        space_cache[(shape_key, offset_x)] = space
+
+    pp = constants.PlacementParams(
+        safety_margin=case["effective_validator_config"]["safety_margin"],
+        start_z=case["effective_validator_config"]["start_z"],
+        ceiling_margin=case["effective_validator_config"]["ceiling_margin"],
+        start_margin=case["effective_validator_config"]["start_margin"],
+    )
+
+    orientation = case["candidate_orientation"]
+    size = np.array(case["candidate_size"], dtype=np.float64)
+    osize = geometry.oriented_size(size, orientation)
+    target_world = np.array(case["candidate_target_pos"], dtype=np.float64)
+    pos_rel = target_world - np.array([offset_x, 0.0, 0.0])
+    cand = Candidate(
+        item_idx=case["candidate_item_index"], container_idx=0, ems_id=0,
+        orientation=orientation, pos_rel=pos_rel, osize=osize,
+    )
+
+    placed = []
+    for item in case["placed_items"]:
+        pos_world = np.array(item["pos_world"], dtype=np.float64)
+        orn_quat = np.array(item["orn_quat"], dtype=np.float64)
+        size_lwh = np.array(item["size"], dtype=np.float64)
+        world_min, world_max = geometry.rotated_aabb(pos_world, size_lwh, orn_quat)
+        origin = np.array([offset_x, 0.0, 0.0], dtype=np.float64)
+        placed.append(PlacedItem(
+            pos_world=pos_world, orn_quat=orn_quat, size=size_lwh, weight=1.0,
+            is_soft=False, is_priority=False,
+            aabb_min_rel=world_min - origin, aabb_max_rel=world_max - origin,
+        ))
+
+    state = _make_state([space], {0: placed}, {0: []})
+    return state, cand, pp
+
+
+def _run_l_path_golden():
+    """全1,000件を実行し `(cases, results)` を返す（`results[i]` は `check_l_path` の bool）。
+    複数テストで再利用するモジュールレベルキャッシュ。
+    """
+    from src.packing_core.masks import check_l_path
+
+    cases = _load_l_path_golden_cases()
+    space_cache: dict = {}
+    results = [
+        check_l_path(*_golden_case_state_and_candidate(case, space_cache)[:3])
+        for case in cases
+    ]
+    return cases, results
+
+
+_L_PATH_GOLDEN_CACHE: dict = {}
+
+
+def _l_path_golden_results():
+    if "value" not in _L_PATH_GOLDEN_CACHE:
+        _L_PATH_GOLDEN_CACHE["value"] = _run_l_path_golden()
+    return _L_PATH_GOLDEN_CACHE["value"]
+
+
+def test_l_path_golden_dataset_has_1000_cases_with_403_official_pass():
+    cases, _ = _l_path_golden_results()
+    assert len(cases) == 1000
+    assert sum(1 for c in cases if c["official_verdict"]) == 403
+
+
+def test_l_path_golden_dangerous_false_accept_is_zero():
+    """安全契約: proxy_pass and official_fail（危険な誤合格）が全1,000件で0件であること。"""
+    cases, results = _l_path_golden_results()
+    dangerous = [
+        c["case_id"] for c, proxy_pass in zip(cases, results)
+        if proxy_pass and not c["official_verdict"]
+    ]
+    assert dangerous == []
+
+
+def test_l_path_golden_proxy_acceptance_rate_meets_floor():
+    """proxy_acceptance_rate（分母=official_pass 403件）が下限0.95以上であること。"""
+    cases, results = _l_path_golden_results()
+    official_pass_flags = [proxy_pass for c, proxy_pass in zip(cases, results) if c["official_verdict"]]
+    assert len(official_pass_flags) == 403
+    acceptance_rate = sum(official_pass_flags) / len(official_pass_flags)
+    assert acceptance_rate >= 0.95
+
+
+def test_l_path_golden_clear_path_category_mostly_accepted():
+    """既知fixture（無障害）: clear_pathカテゴリ（全件official pass）で退化した全不合格実装を排除する。"""
+    cases, results = _l_path_golden_results()
+    clear_path_results = [
+        proxy_pass for c, proxy_pass in zip(cases, results) if c["category"] == "clear_path"
+    ]
+    assert len(clear_path_results) == 200
+    assert all(clear_path_results)
+
+
+def test_l_path_golden_y_leg_blocked_category_all_rejected():
+    """既知fixture（Yレグ遮蔽）: 全件official failのため、危険な誤合格0件契約から全件不合格になる。"""
+    cases, results = _l_path_golden_results()
+    y_blocked_results = [
+        proxy_pass for c, proxy_pass in zip(cases, results) if c["category"] == "y_leg_blocked"
+    ]
+    assert len(y_blocked_results) == 200
+    assert not any(y_blocked_results)
+
+
+def test_l_path_golden_x_leg_blocked_category_all_rejected():
+    """既知fixture（Xレグ遮蔽）: 全件official failのため、危険な誤合格0件契約から全件不合格になる。"""
+    cases, results = _l_path_golden_results()
+    x_blocked_results = [
+        proxy_pass for c, proxy_pass in zip(cases, results) if c["category"] == "x_leg_blocked"
+    ]
+    assert len(x_blocked_results) == 200
+    assert not any(x_blocked_results)
+
+
+def test_l_path_golden_performance_budget_p95_under_1ms():
+    """性能予算: p95<1.0ms/candidate（既存 `PackingState`/`ContainerSpace` を1回構築しループ外で
+    再利用する構成、§4.5「性能予算」）。ウォームアップ1回、GC無効化、time.perf_counter()。"""
+    import gc
+    import time
+
+    from src.packing_core.masks import check_l_path
+
+    cases = _load_l_path_golden_cases()[:300]
+    space_cache: dict = {}
+    prepared = [_golden_case_state_and_candidate(case, space_cache) for case in cases]
+
+    # ウォームアップ（import・分岐予測等の一過性コストを計測対象から除外）。
+    for state, cand, pp in prepared[:10]:
+        check_l_path(state, cand, pp)
+
+    gc.disable()
+    try:
+        durations = []
+        for state, cand, pp in prepared:
+            start = time.perf_counter()
+            check_l_path(state, cand, pp)
+            durations.append(time.perf_counter() - start)
+    finally:
+        gc.enable()
+
+    durations.sort()
+    p95 = durations[int(len(durations) * 0.95)]
+    assert p95 < 1.0e-3, f"check_l_path p95 duration {p95 * 1000:.4f}ms exceeds 1.0ms budget"

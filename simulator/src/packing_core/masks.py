@@ -2,9 +2,10 @@
 
 T-014 時点では `check_inclusion`／`check_ceiling` のみを実装した。T-015 で `MaskStage`・
 `prefilter_dims`・`check_overlap`・`evaluate_stage`（DIMS〜CEILINGの単一段階ディスパッチ）を
-追加する。`l_path_sweep_boxes`・`check_l_path`、および `evaluate_stage` への `MaskStage.L_PATH`
-接続は T-016／T-017 の対象外であり、本ファイルではスタブも含め追加しない
-（T-015時点の `MaskStage.L_PATH` 指定は `NotImplementedError`）。
+追加した。T-016B で `l_path_sweep_boxes`・`check_l_path`（純NumPy保守プロキシ、P4確定式、
+出典: `validator.py::PlacementValidator.check_transport_path`／`_move_item`、転記元HEAD
+`abf630f`）を実装した。`evaluate_stage` への `MaskStage.L_PATH` 接続は T-017 の対象外であり、
+本ファイルでは変更しない（T-016B時点でも `MaskStage.L_PATH` 指定は `NotImplementedError`）。
 """
 from enum import IntEnum
 from typing import TYPE_CHECKING
@@ -12,7 +13,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from src.packing_core import geometry
-from src.packing_core.constants import EPS_GEOM, PlacementParams
+from src.packing_core.constants import (
+    CEILING_CLIP_SAFETY,
+    EPS_GEOM,
+    RESTING_SNAP_BAND,
+    PlacementParams,
+)
 from src.packing_core.container_space import ContainerSpace, contains_oriented_box
 from src.packing_core.types import Candidate, EMSBox, Vec3
 
@@ -152,6 +158,114 @@ def check_overlap(state: "PackingState", cand: Candidate, tol: float) -> bool:
             cand_min, cand_max, item.aabb_min_rel, item.aabb_max_rel, tol=tol
         ):
             return False
+    return True
+
+
+def l_path_sweep_boxes(
+    space: ContainerSpace, cand: Candidate, pp: PlacementParams
+) -> tuple[tuple[Vec3, Vec3], tuple[Vec3, Vec3]]:
+    """L字経路のYレグ・Xレグの連続スイープAABB（相対座標）を返す（§4.5、T-016B確定、A15）。
+
+    出典: `src/ground_handling/validator.py::PlacementValidator.check_transport_path`
+    L96-99,101-137（転記元HEAD `abf630f`）。公式は `lane_x`／`effective_start_z`／`rel_z` を
+    算出したうえでYレグ（`y: entry -> target`, x=lane_x, z=rel_z 固定）→Xレグ
+    （`x: lane_x -> target`, y=target, z=rel_z 固定）の順で候補を運ぶ（下降レグなし、z固定）。
+    ORNS は全て90度倍数の軸整列回転のため、スイープ包絡は候補の実移動と厳密一致する
+    （近似ではない）。
+
+    Args:
+        space: 対象コンテナの `ContainerSpace`（`path_*` 6フィールドを使用）。
+        cand: 判定対象の配置候補。`pos_rel`（目標中心）／`osize`（回転後寸法）を使用する。
+        pp: 配置判定パラメータ。`start_margin`／`start_z`／`ceiling_margin` を使用する
+            （L字経路では `internal_extra` は使用しない）。
+
+    Returns:
+        `(y_leg, x_leg)`。各要素は `(min, max)` のAABB（コンテナ相対）。要素0=Yレグ、
+        要素1=Xレグ。Xレグはスイープ長ゼロ（`lane_x==target_x`）でも必ず2件目として返す
+        （候補自身の半幅のみを持つ非退化AABBになる）。
+    """
+    half = cand.osize / 2.0
+    target = cand.pos_rel
+
+    # 入口レーンx（A12/A15）: 公式 x_min/x_max は candidate（half_lwh[0]）・validator設定
+    # （start_margin）依存のため、space の幾何基底へ使用時に合成する。
+    lane_x_min = space.path_lane_x_min_geom_rel + half[0] + pp.start_margin
+    lane_x_max = space.path_lane_x_max_geom_rel - half[0] - pp.start_margin
+    lane_x = min(max(float(target[0]), lane_x_min), lane_x_max)  # validator.py L99 と同じ順序
+
+    resting_surfaces = (float(space.inner_min_rel[2]), space.path_mid_resting_z_rel)
+    ceiling_surfaces = (space.path_mid_ceiling_z_rel, float(space.inner_max_rel[2]))
+
+    # 2. 直置き判定（validator.py L117-122）。
+    bottom_z = float(target[2]) - half[2]
+    effective_start_z = pp.start_z
+    for r_z in resting_surfaces:
+        if 0.0 <= (bottom_z - r_z) <= RESTING_SNAP_BAND:
+            effective_start_z = 0.0
+            break
+
+    # 3. 頭打ち回避クリップ（validator.py L124-133）。
+    top_z = float(target[2]) + half[2]
+    if effective_start_z > 0.0:
+        for c_z in ceiling_surfaces:
+            clearance = c_z - top_z
+            if 0.0 <= clearance < (effective_start_z + pp.ceiling_margin):
+                effective_start_z = max(0.0, clearance - pp.ceiling_margin - CEILING_CLIP_SAFETY)
+                break
+
+    # validator.py L135: rel_z = min(height+buffer-thickness-half_z-start_margin, target_z+eff)。
+    # height+buffer-thickness は inner_max_rel[2] と恒等的に一致する（A15、§4.2）。
+    rel_z = min(float(space.inner_max_rel[2]) - half[2] - pp.start_margin, float(target[2]) + effective_start_z)
+
+    entry_y = space.path_entry_y_rel
+    target_y = float(target[1])
+    target_x = float(target[0])
+
+    y_lo, y_hi = (entry_y, target_y) if entry_y <= target_y else (target_y, entry_y)
+    y_leg_min = np.array([lane_x - half[0], y_lo - half[1], rel_z - half[2]], dtype=np.float64)
+    y_leg_max = np.array([lane_x + half[0], y_hi + half[1], rel_z + half[2]], dtype=np.float64)
+
+    x_lo, x_hi = (lane_x, target_x) if lane_x <= target_x else (target_x, lane_x)
+    x_leg_min = np.array([x_lo - half[0], target_y - half[1], rel_z - half[2]], dtype=np.float64)
+    x_leg_max = np.array([x_hi + half[0], target_y + half[1], rel_z + half[2]], dtype=np.float64)
+
+    return (y_leg_min, y_leg_max), (x_leg_min, x_leg_max)
+
+
+def check_l_path(state: "PackingState", cand: Candidate, pp: PlacementParams) -> bool:
+    """L字経路の純NumPy保守プロキシ（P4確定式）で判定する（§4.5、T-016B確定、v1.13）。
+
+    プロキシ = P4：全レグ×全障害物（`state.placed[cand.container_idx]` の既配置AABB ∪
+    `state.containers[cand.container_idx].path_obstacle_boxes_rel`）について、軸ごとの隙間
+    `gap_i`（重なる軸は0）から `distance_sq = Σgap_i²` を求め、`distance_sq > (pp.safety_margin
+    + EPS_GEOM) ** 2` を要求する。L字経路では `pp.internal_extra` を加算しない。片側含意
+    `check_l_path()==True ⇒ 公式 PlacementValidator.check_transport_path()==True` を満たす
+    （証明: docs/実装詳細仕様書.md §4.5「L字経路：プロキシ確定仕様（v1.13）」）。格子は使わない。
+
+    Args:
+        state: 現在の `PackingState`。
+        cand: 判定対象の配置候補。
+        pp: 配置判定パラメータ。`safety_margin` を使用する。
+
+    Returns:
+        全レグ・全障害物ペアが `safety_margin` を超えて分離していれば True。
+    """
+    space = state.containers[cand.container_idx]
+    leg_boxes = l_path_sweep_boxes(space, cand, pp)
+
+    obstacles: list[tuple[Vec3, Vec3]] = [
+        (item.aabb_min_rel, item.aabb_max_rel) for item in state.placed[cand.container_idx]
+    ]
+    obstacles.extend(space.path_obstacle_boxes_rel)
+
+    threshold_sq = (pp.safety_margin + EPS_GEOM) ** 2
+
+    for leg_min, leg_max in leg_boxes:
+        for obs_min, obs_max in obstacles:
+            gap = np.maximum(0.0, np.maximum(leg_min - obs_max, obs_min - leg_max))
+            distance_sq = float(np.dot(gap, gap))
+            if not (distance_sq > threshold_sq):
+                return False
     return True
 
 

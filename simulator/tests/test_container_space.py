@@ -130,6 +130,8 @@ def test_container_space_dataclass_fields():
     assert field_names == {
         "index", "offset_x", "inner_min_rel", "inner_max_rel",
         "cut_planes", "shelf_boxes", "cell", "floor_z", "ceil_z", "height",
+        "path_entry_y_rel", "path_lane_x_min_geom_rel", "path_lane_x_max_geom_rel",
+        "path_mid_resting_z_rel", "path_mid_ceiling_z_rel", "path_obstacle_boxes_rel",
     }
 
 
@@ -525,3 +527,130 @@ def test_effective_volume_matches_independent_grid_integral_for_cut_and_shelf_fi
     # 変数として保持するのみで assert しない（合否条件にしない、interface_notes.md §K.10）。
     diagnostic_relative_error_vs_official_volume = abs(result - cdict["volume"]) / cdict["volume"]
     assert isinstance(diagnostic_relative_error_vs_official_volume, float)  # 計算のみ記録、閾値判定はしない
+
+
+# --- T-016B: L字経路用派生フィールド（A15確定、§4.2「T-016B: L字経路用派生フィールド」） -----------
+
+
+def test_path_entry_y_rel_is_negative_half_width():
+    from src.packing_core.container_space import build_container_space
+
+    cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
+    space = build_container_space(cdict, index=0, cell=CELL)
+
+    assert space.path_entry_y_rel == pytest.approx(-cdict["width"] / 2.0)
+
+
+def test_path_lane_x_geom_bounds_match_official_formula():
+    """出典: validator.py::check_transport_path L96-97。geom基底は half_lwh/start_margin を
+    含まない候補・validator設定に非依存な値である（A15）。"""
+    from src.packing_core.container_space import build_container_space
+
+    cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
+    space = build_container_space(cdict, index=0, cell=CELL)
+
+    length, thickness, cut_x = cdict["length"], cdict["thickness"], cdict["cut_x"]
+    assert space.path_lane_x_min_geom_rel == pytest.approx(-length / 2.0 + thickness + cut_x)
+    assert space.path_lane_x_max_geom_rel == pytest.approx(length / 2.0 - thickness)
+
+
+def test_path_mid_resting_and_ceiling_z_match_official_formula():
+    """出典: validator.py::check_transport_path L103-111（resting_surfaces[1]/ceiling_surfaces[0]）。"""
+    from src.packing_core.container_space import build_container_space
+
+    cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
+    space = build_container_space(cdict, index=0, cell=CELL)
+
+    height, thickness = cdict["height"], cdict["thickness"]
+    # buffer は cdict に無いキーのため §K.1 の復元式で独立に求める（本番コードの
+    # _recover_buffer と同じ式を、公開情報である cdict["center"]/cdict["height"] のみから
+    # このテスト内で再計算する。private関数の直接importはしない）。
+    buffer = float(cdict["center"][2]) - float(cdict["height"]) / 2.0
+    assert space.path_mid_resting_z_rel == pytest.approx(height / 2.0 + thickness + buffer)
+    assert space.path_mid_ceiling_z_rel == pytest.approx(height / 2.0 + buffer)
+
+
+def test_path_mid_resting_and_ceiling_z_identity_with_inner_bounds():
+    """公式resting_surfaces[0]/ceiling_surfaces[1]と`inner_min_rel[2]`/`inner_max_rel[2]`の
+    恒等性（A15、docs/interface_notes.md §L.2）を、`buffer=0`（T-016Aゴールデン1,000件が
+    実際に使用した唯一の値。`configs/sample_config.json` task 000/001 いずれも `buffer=0.0`）
+    で回帰確認する。
+
+    注記（T-016B実装時の追加調査）: `inner_max_rel[2] == height+buffer-thickness` は
+    `buffer`非ゼロでも一般に成立する（`thickness != buffer` の合成fixtureで独立検証済み）。
+    一方 `inner_min_rel[2]` は幾何的に常に `thickness+buffer` であり、公式
+    `resting_surfaces[0] = container.thickness`（`buffer`を含まない生値、validator.py L104）
+    とは `buffer != 0` のとき一致しない。`buffer` はconfigで上書き可能な内部属性
+    （interface_notes.md §I-7）だが、確認できた全設定（sample_config.json task 000/001）・
+    T-016Aゴールデン1,000件のいずれも `buffer=0.0` であり、この既知の不一致は現状の
+    確認範囲内では顕在化しない。A15はこの`buffer=0`前提のもとで確定済み仕様として承認
+    されており、本テストもその検証済み条件を再現する（`buffer!=0`域への拡張はT-016Bの
+    スコープ外、別途報告が必要な既知の限界）。
+    """
+    from src.packing_core.container_space import build_container_space
+
+    thickness, height, buffer = 0.04, 1.61, 0.0  # T-016Aゴールデン基準コンテナと同一の値
+    raw_config = {
+        "length": 2.0, "width": 1.45, "height": height, "thickness": thickness,
+        "cut_x": 0.44, "cut_y": 0.4, "buffer": buffer, "require_shelf": False,
+    }
+    cdict = golden.build_cdict_from_raw_config(raw_config, offset_x=0.0)
+    space = build_container_space(cdict, index=0, cell=golden.CELL)
+
+    assert float(space.inner_min_rel[2]) == pytest.approx(thickness)
+    assert float(space.inner_max_rel[2]) == pytest.approx(height + buffer - thickness)
+
+
+def test_path_obstacle_boxes_rel_uses_raw_aabb_not_clipped():
+    """`path_obstacle_boxes_rel` はクリップ前のraw AABB（`shelf_boxes` とは別物）。
+    大棚のX半径は内壁AABBのX境界より壁厚半分外側に出る（§K.4）ため、shelf=True では
+    raw AABBのXレンジが `shelf_boxes`（クリップ後）より広いことで区別できる。"""
+    from src.packing_core.container_space import build_container_space
+
+    cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=True)
+    space = build_container_space(cdict, index=0, cell=CELL)
+
+    assert len(space.path_obstacle_boxes_rel) == 2  # 小棚 + 大棚（require_shelf相当）
+
+    def _xy_area(box):
+        bmin, bmax = box
+        return float((bmax[0] - bmin[0]) * (bmax[1] - bmin[1]))
+
+    main_raw = max(space.path_obstacle_boxes_rel, key=_xy_area)
+    main_clipped = max(space.shelf_boxes, key=_xy_area)
+    raw_x_extent = float(main_raw[1][0] - main_raw[0][0])
+    clipped_x_extent = float(main_clipped[1][0] - main_clipped[0][0])
+    assert raw_x_extent > clipped_x_extent
+
+
+def test_path_obstacle_boxes_rel_small_shelf_only_when_shelf_flag_false():
+    """`cdict["shelf"]` が False でも小棚のraw AABBは常時含まれる（§K.2、要素数1）。"""
+    from src.packing_core.container_space import build_container_space
+
+    cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
+    space = build_container_space(cdict, index=0, cell=CELL)
+
+    assert len(space.path_obstacle_boxes_rel) == 1
+
+
+def test_path_obstacle_boxes_rel_matches_golden_raw_aabb():
+    from src.packing_core.container_space import build_container_space
+
+    cdict = golden.build_fixture_ab_cdict(shelf=True)
+    space = build_container_space(cdict, index=0, cell=golden.CELL)
+
+    buffer = golden.FIXTURE_AB_BUFFER
+    expected_small = golden.expected_small_shelf_raw(
+        golden.FIXTURE_AB_LENGTH, golden.FIXTURE_AB_WIDTH, golden.FIXTURE_AB_HEIGHT,
+        golden.FIXTURE_AB_THICKNESS, golden.FIXTURE_AB_CUT_X, buffer,
+    )
+    expected_main = golden.expected_main_shelf_raw(
+        golden.FIXTURE_AB_LENGTH, golden.FIXTURE_AB_WIDTH, golden.FIXTURE_AB_HEIGHT,
+        golden.FIXTURE_AB_THICKNESS, buffer,
+    )
+
+    assert len(space.path_obstacle_boxes_rel) == 2
+    np.testing.assert_allclose(space.path_obstacle_boxes_rel[0][0], expected_small[0], atol=EPS_GEOM)
+    np.testing.assert_allclose(space.path_obstacle_boxes_rel[0][1], expected_small[1], atol=EPS_GEOM)
+    np.testing.assert_allclose(space.path_obstacle_boxes_rel[1][0], expected_main[0], atol=EPS_GEOM)
+    np.testing.assert_allclose(space.path_obstacle_boxes_rel[1][1], expected_main[1], atol=EPS_GEOM)

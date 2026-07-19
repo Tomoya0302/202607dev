@@ -554,6 +554,85 @@ def test_state_rebuild_invalidate_on_geometry_change():
     _assert_state_equivalent(state2, state_full2, 1)
 
 
+# --- 8b) T-016B: geometry_key への path_* 6フィールド追加 ------------------------------
+#
+# interface_notes.md §L.5: height/buffer の個別値は既存キー要素（inner_min_rel/
+# inner_max_rel/クリップ後shelf_boxes/cut_planes）から一般に一意復元できることを証明
+# できなかった（クリップ後shelf_boxesが退化・空集合になり得るedge caseで分離情報が失わ
+# れるため）。安全側の最小修正として path_* 6フィールドを _container_geometry_key へ
+# 直接追加した。本節はこの拡張の必要性そのものを回帰確認する：cut_x=0（小棚もクリップ後
+# 空集合）の2コンテナで inner_min_rel/inner_max_rel/shelf_boxes/cut_planes が完全一致
+# しつつ height/buffer の組だけが異なる（height+buffer の和は inner_max_rel[2] 経由で
+# 一致させたまま、height と buffer の内訳だけを変える）fixtureを用いる。
+
+
+def test_container_geometry_key_distinguishes_height_buffer_split_with_identical_legacy_key():
+    """§L.5の動機となったedge case: 既存キー要素が完全一致しつつ height/buffer の内訳だけが
+    異なる2コンテナで `_container_geometry_key` が異なる値を返すこと（path_mid_resting_z_rel/
+    path_mid_ceiling_z_rel の差がキーに反映される）。"""
+    from src.packing_core import state
+
+    inner_min = DEFAULT_INNER_MIN
+    inner_max = DEFAULT_INNER_MAX
+
+    cdict_a = _container(0, 0.0, inner_min, inner_max, thickness=0.02, buffer=0.02)
+    cdict_b = _container(0, 0.0, inner_min, inner_max, thickness=0.02, buffer=0.05)
+    assert cdict_a["height"] != cdict_b["height"]  # height+buffer の和は inner_max_rel[2] 経由で一致
+
+    space_a = _build_container_space_from_cdict(cdict_a)
+    space_b = _build_container_space_from_cdict(cdict_b)
+
+    # 既存キー要素（拡張前の legacy 部分）は完全一致することを前提として確認する。
+    np.testing.assert_array_equal(space_a.inner_min_rel, space_b.inner_min_rel)
+    np.testing.assert_array_equal(space_a.inner_max_rel, space_b.inner_max_rel)
+    assert space_a.shelf_boxes == [] == space_b.shelf_boxes
+    assert space_a.cut_planes == [] == space_b.cut_planes
+
+    # path_mid_resting_z_rel/path_mid_ceiling_z_rel は height/buffer の内訳に依存するため異なる。
+    assert space_a.path_mid_resting_z_rel != pytest.approx(space_b.path_mid_resting_z_rel)
+    assert space_a.path_mid_ceiling_z_rel != pytest.approx(space_b.path_mid_ceiling_z_rel)
+
+    key_a = state._container_geometry_key(space_a)
+    key_b = state._container_geometry_key(space_b)
+    assert key_a != key_b
+
+
+def test_state_rebuild_invalidate_on_height_buffer_only_geometry_change():
+    """経路: 既存キー要素が不変で height/buffer の内訳だけが変わる`geometry_key`不一致に
+    よる無効化→全再構築フォールバック（§L.5、path_*拡張が無ければ誤ヒットし得たケース）。"""
+    from src.packing_core import state
+
+    item = _item(index=0, size=(0.2, 0.2, 0.2), mass=4.0, pos=(0.0, 0.0, 0.12), orn=IDENTITY_QUAT, belongs_to=0)
+
+    cdict1 = _container(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX, thickness=0.02, buffer=0.02)
+    init1 = _init([{**cdict1, "packed_items": []}])
+    obs1 = _observation([{**cdict1, "packed_items": [item]}], pool_list=[])
+    _, cache1 = state.build_state_cached(obs1, init1, cache=None)
+
+    cdict2 = _container(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX, thickness=0.02, buffer=0.05)
+    init2 = _init([{**cdict2, "packed_items": []}])
+    obs2 = _observation([{**cdict2, "packed_items": [item]}], pool_list=[])
+
+    state2, _ = state.build_state_cached(obs2, init2, cache=cache1)
+    state_full2 = state.build_state(obs2, init2)
+    _assert_state_equivalent(state2, state_full2, 1)
+
+    # path_* も全再構築結果と一致することを直接確認する（_assert_state_equivalent は
+    # height/EMS/placed/pool/meta のみを比較し ContainerSpace.path_* を見ないため）。
+    assert state2.containers[0].path_mid_resting_z_rel == pytest.approx(
+        state_full2.containers[0].path_mid_resting_z_rel
+    )
+    assert state2.containers[0].path_mid_ceiling_z_rel == pytest.approx(
+        state_full2.containers[0].path_mid_ceiling_z_rel
+    )
+
+
+def _build_container_space_from_cdict(cdict: dict):
+    from src.packing_core.container_space import build_container_space
+
+    return build_container_space(cdict, index=cdict["index"], cell=CELL)
+
+
 # --- 9) 並べ替えのみ（追加差分なし） -------------------------------------------------
 
 def test_state_rebuild_reorder_without_change_matches_full():

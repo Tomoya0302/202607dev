@@ -6,6 +6,11 @@ from dataclasses import dataclass
 EPS_GEOM = 1e-9        # 同一判定
 TOL_CONTACT = 5e-3     # 接触判定 5mm
 
+# L字経路プロキシ用の意味付き定数（A15確定、T-016B。出典: validator.py::check_transport_path
+# L118-133、docs/実装詳細仕様書.md §4.2「T-016B: L字経路用派生フィールド」）。
+RESTING_SNAP_BAND = 0.05       # 直置き面直上とみなす帯幅 [m]（validator.py:120 の 0.05）
+CEILING_CLIP_SAFETY = 0.0005   # 天井頭打ち回避クリップの安全余裕 [m]（validator.py:132 の 0.0005）
+
 
 @dataclass(frozen=True)
 class PlacementParams:
@@ -17,6 +22,9 @@ class PlacementParams:
         start_z: 配置開始高さ [m]。
         ceiling_margin: 天井とのクリアランス [m]。
         internal_extra: 内部判定の厳格化幅 [m]。
+        start_margin: L字経路の入口レーン・頭打ちクリップに使う余裕 [m]（公式
+            `BaseValidator.__init__` の `config.get('start_margin', 0.01)` 既定を転記。
+            A15確定、T-016B）。
     """
 
     inclusion_margin: float = -0.005   # 符号解釈=A14
@@ -24,6 +32,7 @@ class PlacementParams:
     start_z: float = 0.08
     ceiling_margin: float = 0.018
     internal_extra: float = 0.005      # 内部判定の厳格化幅
+    start_margin: float = 0.01         # A15確定、T-016B
 
 
 @dataclass(frozen=True)
@@ -151,12 +160,25 @@ ASSUMPTIONS = {
     "A10": {"claim": "pos は幾何中心", "status": "unconfirmed", "ref": "T-004 fixture"},
     "A11": {"claim": "item_idx はプール内 index（消費で縮小）", "status": "confirmed",
             "ref": "T-002 interface_notes.md §F; env.py:209, items.py:218, README:297,304"},
-    "A12": {"claim": "入口レーン x は公式定義に従う", "status": "unconfirmed", "ref": "T-016"},
+    "A12": {"claim": ("公式の入口面・入口レーン計算式：入口面は世界座標で "
+                       "rel_start.y = -container.width/2。入口レーン "
+                       "lane_x = clamp(rel_target.x, x_min, x_max)（x_min=-length/2+thickness"
+                       "+cut_x+half_lwh[0]+start_margin、x_max=length/2-thickness-half_lwh[0]"
+                       "-start_margin）"),
+            "status": "confirmed",
+            "ref": "T-016 調査; validator.py::check_transport_path L85-175"},
     "A13": {"claim": "orientation 表は §3.2", "status": "unconfirmed", "ref": "T-004"},
     "A14": {"claim": ("inclusion_margin は符号付きマージン: 正で緩和（はみ出し許容）／"
                        "負で厳格（内側クリアランス要求）。-0.005 は内側5mm必須の意"),
             "status": "confirmed",
             "ref": "T-002 interface_notes.md §C; validator.py:78, evaluator.py:56, utils.py:207"},
+    "A15": {"claim": ("A12 の式（lane_x／入口面 y／start_z／resting・ceiling surfaces）を純NumPy "
+                       "ContainerSpace/PackingState へ写像する式は path_entry_y_rel／"
+                       "path_lane_x_min_geom_rel／path_lane_x_max_geom_rel／"
+                       "path_mid_resting_z_rel／path_mid_ceiling_z_rel／path_obstacle_boxes_rel "
+                       "の6フィールド（§4.2「T-016B: L字経路用派生フィールド」）"),
+            "status": "confirmed",
+            "ref": "T-016B仕様追補 v1.13; T-016Aゴールデン1,000件で危険な誤合格0件・採択率403/403実測"},
 }
 
 

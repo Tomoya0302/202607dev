@@ -479,17 +479,27 @@ def _container_space_with_inner_bounds(
     （本ファイル専用、他所非依存）。
     """
     dummy_grid = np.zeros((1, 1), dtype=np.float64)
+    imin = np.asarray(inner_min_rel, dtype=np.float64)
+    imax = np.asarray(inner_max_rel, dtype=np.float64)
     return ContainerSpace(
         index=0,
         offset_x=0.0,
-        inner_min_rel=np.asarray(inner_min_rel, dtype=np.float64),
-        inner_max_rel=np.asarray(inner_max_rel, dtype=np.float64),
+        inner_min_rel=imin,
+        inner_max_rel=imax,
         cut_planes=[],
         shelf_boxes=[],
         cell=CELL,
         floor_z=dummy_grid,
         ceil_z=dummy_grid,
         height=dummy_grid,
+        # T-016B: normalize_descriptors は path_* を参照しないため、他フィールドと同様に
+        # inner_min_rel/inner_max_rel から自己無矛盾なダミー値で埋める。
+        path_entry_y_rel=float(imin[1]),
+        path_lane_x_min_geom_rel=float(imin[0]),
+        path_lane_x_max_geom_rel=float(imax[0]),
+        path_mid_resting_z_rel=float(imin[2]),
+        path_mid_ceiling_z_rel=float(imax[2]),
+        path_obstacle_boxes_rel=(),
     )
 
 

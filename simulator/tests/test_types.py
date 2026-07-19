@@ -120,17 +120,19 @@ def test_placement_params_is_frozen():
 
 
 def test_assumptions_key_set_and_status_after_t002():
-    # §3.6 / 付録C: 仮定台帳のキーはちょうど A9..A14。
+    # §3.6 / 付録C: 仮定台帳のキーはちょうど A9..A15。
     # T-002（docs/interface_notes.md 読解）により A9/A11/A14 は confirmed。
-    # A10=T-004 fixture／A12=T-016 移植／A13=T-003 公式突合 で確認予定のため unconfirmed のまま。
-    assert set(constants.ASSUMPTIONS.keys()) == {"A9", "A10", "A11", "A12", "A13", "A14"}
+    # T-016調査（v1.12）でA12、T-016B仕様追補（v1.13）でA15がconfirmed化された。
+    # A10=T-004 fixture／A13=T-003 公式突合 で確認予定のため unconfirmed のまま。
+    assert set(constants.ASSUMPTIONS.keys()) == {"A9", "A10", "A11", "A12", "A13", "A14", "A15"}
     expected_status = {
         "A9": "confirmed",
         "A10": "unconfirmed",
         "A11": "confirmed",
-        "A12": "unconfirmed",
+        "A12": "confirmed",
         "A13": "unconfirmed",
         "A14": "confirmed",
+        "A15": "confirmed",
     }
     for aid, entry in constants.ASSUMPTIONS.items():
         assert set(entry.keys()) == {"claim", "status", "ref"}
