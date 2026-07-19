@@ -164,12 +164,3 @@ def test_watchdog_source_does_not_use_time_time() -> None:
     source = inspect.getsource(watchdog)
     assert "time.time(" not in source
     assert "sleep(" not in source
-
-
-def test_watchdog_does_not_implement_t026_fallback() -> None:
-    """T-026 責務（safe_decide 等の多層フォールバック）が未実装であることを確認する。"""
-    from src.packing_core import watchdog
-
-    source = inspect.getsource(watchdog)
-    for forbidden in ("safe_decide", "Candidate", "layer_error", "decided_layer"):
-        assert forbidden not in source
