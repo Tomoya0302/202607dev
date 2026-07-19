@@ -4,8 +4,8 @@ T-014 時点では `check_inclusion`／`check_ceiling` のみを実装した。T
 `prefilter_dims`・`check_overlap`・`evaluate_stage`（DIMS〜CEILINGの単一段階ディスパッチ）を
 追加した。T-016B で `l_path_sweep_boxes`・`check_l_path`（純NumPy保守プロキシ、P4確定式、
 出典: `validator.py::PlacementValidator.check_transport_path`／`_move_item`、転記元HEAD
-`abf630f`）を実装した。`evaluate_stage` への `MaskStage.L_PATH` 接続は T-017 の対象外であり、
-本ファイルでは変更しない（T-016B時点でも `MaskStage.L_PATH` 指定は `NotImplementedError`）。
+`abf630f`）を実装した。T-017 で `evaluate_stage` の `MaskStage.L_PATH` 分岐を `check_l_path`
+へ接続した（単一段階ディスパッチは維持。5段階の順序・短絡評価は呼び出し側の責務、§4.12）。
 """
 from enum import IntEnum
 from typing import TYPE_CHECKING
@@ -293,8 +293,6 @@ def evaluate_stage(
         ValueError: `stage` が `MaskStage` に未定義の値の場合。
         IndexError: `MaskStage.DIMS` において `cand.ems_id` が
             `state.ems[cand.container_idx]` の範囲外の場合（自然な例外を握りつぶさない）。
-        NotImplementedError: `stage` が `MaskStage.L_PATH` の場合（T-015時点では
-            L字経路判定を実装しない。`cand` を変更する前に送出する）。
     """
     stage_enum = MaskStage(stage)
 
@@ -313,10 +311,16 @@ def evaluate_stage(
         space = state.containers[cand.container_idx]
         passed = check_ceiling(space, cand, pp)
         reason = "ceiling"
+    elif stage_enum is MaskStage.L_PATH:
+        # T-016B で実装済みの check_l_path（純NumPy保守プロキシ、P4確定式）へ接続する
+        # （T-017）。L字経路では internal_extra を加算しない既存契約（check_l_path 内部で
+        # 完結）をそのまま維持し、ここでは結果を再解釈しない。
+        passed = check_l_path(state, cand, pp)
+        reason = "path"
     else:
-        # MaskStage.L_PATH: T-016で l_path_sweep_boxes/check_l_path を実装し、T-017で
-        # ここへ接続する。T-015時点では cand を変更する前に例外を送出する。
-        raise NotImplementedError
+        # MaskStage(stage) が上記5メンバーのいずれかを返すことは既に保証されているため、
+        # ここへは到達しない（未来の MaskStage 追加漏れに対する到達不能ガード）。
+        raise AssertionError(f"unreachable: unhandled MaskStage member {stage_enum!r}")
 
     if passed:
         cand.feasible = True

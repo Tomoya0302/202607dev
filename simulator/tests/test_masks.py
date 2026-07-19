@@ -591,17 +591,100 @@ def test_evaluate_stage_invalid_stage_raises_value_error():
         evaluate_stage(state, cand, PP0, 99)
 
 
-def test_evaluate_stage_l_path_raises_not_implemented():
-    """T-015時点では L_PATH の推測実装・暫定合格を行わず NotImplementedError を送出する
-    （T-016で l_path_sweep_boxes/check_l_path を実装、T-017で evaluate_stage へ接続）。"""
+def test_evaluate_stage_l_path_pass_and_fail_semantics(monkeypatch):
+    """T-017: MaskStage.L_PATH は check_l_path へ接続される（旧 NotImplementedError 契約を
+    置換）。合格/不合格それぞれで feasible/reject_reason が正しく設定され、戻り値が同一
+    Candidate であること。check_l_path はちょうど1回、state/cand/pp は同一オブジェクトで
+    渡されること（引数の再構築・再解釈をしない契約の検証）。"""
+    from src.packing_core import masks
     from src.packing_core.masks import MaskStage, evaluate_stage
 
     space = _unit_cube_space()
     cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
     state = _make_state([space], {0: []}, {0: []})
 
-    with pytest.raises(NotImplementedError):
-        evaluate_stage(state, cand, PP0, MaskStage.L_PATH)
+    calls = []
+
+    def spy_pass(state_arg, cand_arg, pp_arg):
+        calls.append((state_arg, cand_arg, pp_arg))
+        return True
+
+    monkeypatch.setattr(masks, "check_l_path", spy_pass)
+    result = evaluate_stage(state, cand, PP0, MaskStage.L_PATH)
+
+    assert result is cand
+    assert cand.feasible is True
+    assert cand.reject_reason == ""
+    assert len(calls) == 1
+    called_state, called_cand, called_pp = calls[0]
+    assert called_state is state
+    assert called_cand is cand
+    assert called_pp is PP0
+
+    calls.clear()
+
+    def spy_fail(state_arg, cand_arg, pp_arg):
+        calls.append((state_arg, cand_arg, pp_arg))
+        return False
+
+    monkeypatch.setattr(masks, "check_l_path", spy_fail)
+    result = evaluate_stage(state, cand, PP0, MaskStage.L_PATH)
+
+    assert result is cand
+    assert cand.feasible is False
+    assert cand.reject_reason == "path"
+    assert len(calls) == 1
+    called_state, called_cand, called_pp = calls[0]
+    assert called_state is state
+    assert called_cand is cand
+    assert called_pp is PP0
+
+
+def test_evaluate_stage_l_path_dispatches_single_stage_only(monkeypatch):
+    """MaskStage.L_PATH 指定時、check_l_path のみが1回呼ばれ、他4段階の判定関数
+    （prefilter_dims/check_inclusion/check_overlap/check_ceiling）は一切呼ばれないこと
+    （単一段階ディスパッチ契約の L_PATH 側での確認）。"""
+    from src.packing_core import masks
+    from src.packing_core.masks import MaskStage
+
+    space = _unit_cube_space()
+    cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+    state = _make_state([space], {0: []}, {0: []})
+
+    calls = {"dims": 0, "inclusion": 0, "overlap": 0, "ceiling": 0, "l_path": 0}
+
+    def spy_dims(cand, ems):
+        calls["dims"] += 1
+        return True
+
+    def spy_inclusion(space, cand, pp):
+        calls["inclusion"] += 1
+        return True
+
+    def spy_overlap(state, cand, tol):
+        calls["overlap"] += 1
+        return True
+
+    def spy_ceiling(space, cand, pp):
+        calls["ceiling"] += 1
+        return True
+
+    def spy_l_path(state_arg, cand_arg, pp_arg):
+        calls["l_path"] += 1
+        assert state_arg is state
+        assert cand_arg is cand
+        assert pp_arg is PP0
+        return True
+
+    monkeypatch.setattr(masks, "prefilter_dims", spy_dims)
+    monkeypatch.setattr(masks, "check_inclusion", spy_inclusion)
+    monkeypatch.setattr(masks, "check_overlap", spy_overlap)
+    monkeypatch.setattr(masks, "check_ceiling", spy_ceiling)
+    monkeypatch.setattr(masks, "check_l_path", spy_l_path)
+
+    masks.evaluate_stage(state, cand, PP0, MaskStage.L_PATH)
+
+    assert calls == {"dims": 0, "inclusion": 0, "overlap": 0, "ceiling": 0, "l_path": 1}
 
 
 def test_evaluate_stage_dims_resolves_ems_via_ems_id():
@@ -657,6 +740,196 @@ def test_evaluate_stage_dims_out_of_range_ems_id_raises_index_error():
 
     with pytest.raises(IndexError):
         evaluate_stage(state, cand, PP0, MaskStage.DIMS)
+
+
+# --- T-017: 5段階呼び出し順序・短絡評価の統合テスト ----------------------------------------
+#
+# evaluate_stage は単一段階ディスパッチのままである（§4.5）。DIMS→INCLUSION→OVERLAP→CEILING→
+# L_PATH の順序と、不合格候補へ後続段階を適用しない短絡評価は「呼び出し側」の責務
+# （§4.12 手順3・4・6）であり、本セクションのローカルhelper（`_run_pipeline` 等）はその
+# 呼び出し側責務をテスト内で表現するだけである。本番コード（masks.py）へ多段パイプライン
+# 関数を追加するものではない（T-023以降の本体パイプラインの責務）。
+
+
+def _all_stages():
+    from src.packing_core.masks import MaskStage
+
+    return (
+        MaskStage.DIMS,
+        MaskStage.INCLUSION,
+        MaskStage.OVERLAP,
+        MaskStage.CEILING,
+        MaskStage.L_PATH,
+    )
+
+
+def _run_pipeline(evaluate_stage_fn, state, cand, pp, stages):
+    """呼び出し側（§4.12 手順3・4・6）の責務を表す最小helper。
+
+    指定された順に `evaluate_stage_fn` を呼び出し、不合格になった時点で停止する
+    （後続stageは呼ばない）。全stage合格時のみ `stages` を最後まで呼び切る。各呼び出しの
+    戻り値が `cand` と同一オブジェクトであることを毎回確認したうえで、その戻り値を次段階へ
+    引き継ぐ（`evaluate_stage` が同一Candidateを返す契約への依存を明示する）。
+
+    Returns:
+        `(cand, executed_stages)`。`executed_stages` は実際に `evaluate_stage_fn` へ渡した
+        `MaskStage` のタプル。
+    """
+    executed = []
+    current = cand
+    for stage in stages:
+        result = evaluate_stage_fn(state, current, pp, stage)
+        assert result is cand  # evaluate_stage は常に同一Candidateを返す契約
+        current = result
+        executed.append(stage)
+        if not current.feasible:
+            break
+    return current, tuple(executed)
+
+
+def _make_pipeline_state_and_candidate():
+    """5段階すべてが（スパイなしでも）合格しうる最小の state/candidate。"""
+    space = _unit_cube_space()
+    ems_box = _make_ems([0.0, 0.0, 0.0], [0.6, 0.6, 0.6])
+    cand = _make_candidate([0.3, 0.3, 0.3], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+    state = _make_state([space], {0: []}, {0: [ems_box]})
+    return state, cand
+
+
+def _install_stage_spies(monkeypatch, masks_module, pp, *, fail_stage=None):
+    """全5段階の判定関数を monkeypatch でスパイ化する。
+
+    `fail_stage` に指定した `MaskStage` のみ False を返し、他は True を返す（未指定なら
+    全段階 True）。各スパイの引数シグネチャは §4.5 の公開API契約（実際の関数シグネチャ）に
+    一致させる：
+
+        prefilter_dims(cand, ems)
+        check_inclusion(space, cand, pp)
+        check_overlap(state, cand, tol)
+        check_ceiling(space, cand, pp)
+        check_l_path(state, cand, pp)
+
+    OVERLAP は `evaluate_stage` が `tol=-pp.internal_extra` を渡す契約（§4.5）を
+    `tol == -pp.internal_extra` で検証する。L_PATH は `pp` をそのまま forward する契約
+    （internal_extra を加算しない既存契約は `check_l_path` 内部の責務であり、T-017では
+    変更しない）を、`pp` が同一オブジェクトであることの確認で担保する。
+
+    Returns:
+        呼び出し回数を記録する `dict`（キー: "dims"/"inclusion"/"overlap"/"ceiling"/"l_path"）。
+    """
+    from src.packing_core.masks import MaskStage
+
+    calls = {"dims": 0, "inclusion": 0, "overlap": 0, "ceiling": 0, "l_path": 0}
+
+    def spy_dims(cand, ems):
+        calls["dims"] += 1
+        return MaskStage.DIMS is not fail_stage
+
+    def spy_inclusion(space, cand, pp_arg):
+        calls["inclusion"] += 1
+        assert pp_arg is pp
+        return MaskStage.INCLUSION is not fail_stage
+
+    def spy_overlap(state, cand, tol):
+        calls["overlap"] += 1
+        assert tol == -pp.internal_extra  # evaluate_stage の tol=-pp.internal_extra 契約
+        return MaskStage.OVERLAP is not fail_stage
+
+    def spy_ceiling(space, cand, pp_arg):
+        calls["ceiling"] += 1
+        assert pp_arg is pp
+        return MaskStage.CEILING is not fail_stage
+
+    def spy_l_path(state, cand, pp_arg):
+        calls["l_path"] += 1
+        assert pp_arg is pp  # internal_extra 加算なし：pp をそのまま forward する契約
+        return MaskStage.L_PATH is not fail_stage
+
+    monkeypatch.setattr(masks_module, "prefilter_dims", spy_dims)
+    monkeypatch.setattr(masks_module, "check_inclusion", spy_inclusion)
+    monkeypatch.setattr(masks_module, "check_overlap", spy_overlap)
+    monkeypatch.setattr(masks_module, "check_ceiling", spy_ceiling)
+    monkeypatch.setattr(masks_module, "check_l_path", spy_l_path)
+
+    return calls
+
+
+def test_stage_pipeline_all_pass_runs_five_stages_in_order(monkeypatch):
+    """全stage合格時、呼び出し側helperがDIMS→INCLUSION→OVERLAP→CEILING→L_PATHの順に
+    ちょうど5回 evaluate_stage を呼び、各判定関数がちょうど1回ずつ実行されること。
+    最終的に feasible=True・reject_reason=""・戻り値が同一Candidateであること。"""
+    from src.packing_core import masks
+    from src.packing_core.masks import evaluate_stage
+
+    stages = _all_stages()
+    state, cand = _make_pipeline_state_and_candidate()
+    calls = _install_stage_spies(monkeypatch, masks, PP0, fail_stage=None)
+
+    result_cand, executed = _run_pipeline(evaluate_stage, state, cand, PP0, stages)
+
+    assert executed == stages
+    assert result_cand is cand
+    assert cand.feasible is True
+    assert cand.reject_reason == ""
+    assert calls == {"dims": 1, "inclusion": 1, "overlap": 1, "ceiling": 1, "l_path": 1}
+
+
+@pytest.mark.parametrize(
+    "fail_index,expected_reason",
+    [(0, "dims"), (1, "inclusion"), (2, "overlap"), (3, "ceiling"), (4, "path")],
+    ids=["dims", "inclusion", "overlap", "ceiling", "l_path"],
+)
+def test_stage_pipeline_short_circuits_at_failing_stage(monkeypatch, fail_index, expected_reason):
+    """DIMS/INCLUSION/OVERLAP/CEILING/L_PATH のいずれかで不合格になったとき、呼び出し側
+    helperがその段階までしか evaluate_stage を呼ばないこと（後続段階の判定関数が一度も
+    呼ばれないこと）。reject_reason が失敗段階に対応すること（全段階のE2E確認）。"""
+    from src.packing_core import masks
+    from src.packing_core.masks import evaluate_stage
+
+    stages = _all_stages()
+    fail_stage = stages[fail_index]
+    call_keys = ["dims", "inclusion", "overlap", "ceiling", "l_path"]
+
+    state, cand = _make_pipeline_state_and_candidate()
+    calls = _install_stage_spies(monkeypatch, masks, PP0, fail_stage=fail_stage)
+
+    result_cand, executed = _run_pipeline(evaluate_stage, state, cand, PP0, stages)
+
+    assert executed == stages[: fail_index + 1]
+    assert result_cand is cand
+    assert cand.feasible is False
+    assert cand.reject_reason == expected_reason
+
+    for i, key in enumerate(call_keys):
+        if i <= fail_index:
+            assert calls[key] == 1, f"stage {key} should be called exactly once"
+        else:
+            assert calls[key] == 0, f"stage {key} should not be called (short-circuited)"
+
+
+def test_evaluate_stage_reject_reason_overwritten_on_pass(monkeypatch):
+    """既存契約：同じCandidateを段階ごとに更新するため、以前のreject_reasonが残っていても
+    次の段階が合格すればreject_reason=""へ上書きされる。ただし通常の短絡評価（呼び出し側）
+    では一度不合格になったCandidateへ後続段階を適用しない（この2つを混同しない。本テストは
+    呼び出し側が短絡せずに evaluate_stage を直接呼んだ場合の上書き契約のみを単体で確認する
+    ——_run_pipeline は使わない）。"""
+    from src.packing_core import masks
+    from src.packing_core.masks import MaskStage, evaluate_stage
+
+    state, cand = _make_pipeline_state_and_candidate()
+    cand.feasible = False
+    cand.reject_reason = "overlap"  # 以前の段階での不合格を模した事前状態
+
+    def spy_pass(state_arg, cand_arg, pp_arg):
+        return True
+
+    monkeypatch.setattr(masks, "check_l_path", spy_pass)
+
+    result = evaluate_stage(state, cand, PP0, MaskStage.L_PATH)
+
+    assert result is cand
+    assert cand.feasible is True
+    assert cand.reject_reason == ""
 
 
 # --- prefilter_dims（T-015確定） ----------------------------------------------------------
