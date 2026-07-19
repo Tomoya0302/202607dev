@@ -477,6 +477,123 @@ z方向を拘束しない面（XY方向のみの制約）。`floor_z`/`ceil_z` �
 
 ---
 
+## L. T-016B仕様追補（A15確定・L字経路プロキシ実測記録、2026-07-19）
+
+読解専用（一次情報記録）。`実装詳細仕様書.md` §3.6 A15・§4.2「T-016B: L字経路用派生フィールド」・
+§4.5「L字経路：プロキシ確定仕様（v1.13）」の根拠記録。分析は `/tmp` 上のスクリプトで実施し、
+リポジトリへは追加していない（`simulator/**`・`docs/parity/l_path_golden_v1.md` は無変更）。
+
+### L.1 T-016Aゴールデンの再検収結果
+
+`simulator/datasets/fixtures/l_path_golden_v1.jsonl`（1,000件）・`docs/parity/l_path_golden_v1.md`
+を実ファイルから再検証し、以下すべて報告値と完全一致・不一致0件を確認した。
+
+* JSONL SHA-256・config SHA-256・`abf630f`時点`validator.py`のgit blob/working tree一致・
+  working treeに`simulator/src/ground_handling`差分なし
+* 必須35キー・型・有限性・`case_id`一意性・`official_exception.occurred==False`（全件）・
+  `official_inclusion_verdict==True`（全件）・`move_call_count`/`official_verdict`契約
+* カテゴリ別200件×5・`official_pass=403`/`fail=597`・boundary8水準×25件・カテゴリ別unique
+  scene数200/200・orientation分布・Y/Xレグ長範囲
+* **spy再検証（全1,000件、縮小なし）**：`scripts/gen_l_path_golden.py` の
+  `build_generation_context`/`check_spy_mismatch` をそのままimportして全件再実行し、
+  `spy_boolean_mismatch=0`・例外0・所要10.7秒を確認
+* `case_seed(category, attempt_i)` の `i` が採択後case indexではなく最大2,000回のattempt indexで
+  あること、`case_id`が採択順`0000..0199`で連番であること、`random_seed`が対応する
+  attempt-seedプール（`i=0..1999`）に含まれることを全件確認。決定論的・再現性を損なわない
+  運用としてT-016Aの確定事項に位置づける
+
+### L.2 A15：公式式→純NumPyの写像（数値検証）
+
+公式L字経路4値（`resting_surfaces=[thickness, height/2+thickness+buffer]`、
+`ceiling_surfaces=[height/2+buffer, height+buffer-thickness]`）のうち2値が、
+既存`ContainerSpace.inner_min_rel[2]`/`inner_max_rel[2]`と恒等的に一致することを、
+ゴールデン70件の記録値および独立な`build_container_space`呼び出し（`length=2.0, width=1.45,
+height=1.61, thickness=0.04, cut_x=0.44, cut_y=0.4, buffer=0.0`のfixture）の両方で数値確認した
+（誤差0、`inner_min_rel[2]=0.04=thickness`、`inner_max_rel[2]=1.57=height+buffer-thickness`）。
+天井cap（`rel_z`の上限）も同様に`inner_max_rel[2]`のみから`z_cap = inner_max_rel[2] - half_z -
+pp.start_margin`として合成可能であることを確認した。これにより新規`ContainerSpace`フィールドを
+6個（`path_entry_y_rel`／`path_lane_x_min_geom_rel`／`path_lane_x_max_geom_rel`／
+`path_mid_resting_z_rel`／`path_mid_ceiling_z_rel`／`path_obstacle_boxes_rel`）まで最小化できた。
+定義・型・単位・生成元・不変条件は `実装詳細仕様書.md` §4.2 の表を正とする。
+
+### L.3 経路障害物：raw AABB必須の確定根拠
+
+公式PyBulletの衝突判定（`getClosestPoints`）は棚body（クリップされない box collision shape）に
+対して行われる。既存`container_space.py::_clip_shelf_aabb`が内壁AABBへクリップした後の
+`shelf_boxes`は、公式bodyより小さくなり得るため、これを経路障害物に使うと
+「片側安全性（`proxy_pass ⇒ official_pass`）」を式で証明できない（クリップにより障害物を
+過小評価し、本来公式が不合格とすべき候補を誤って合格させる方向に振れうるため）。よって
+経路判定では既存`_small_shelf_raw_aabb`/`_main_shelf_raw_aabb`（クリップ前、`container_space.py`
+の既存関数をそのまま流用）を使用する。クリップ後`shelf_boxes`は感度分析専用として扱い、
+本番の経路判定には使用しない。
+
+### L.4 プロキシ候補の実測比較（P1/P2/P3/P4）
+
+決定論的な分割（`sha256(case_id)`昇順、カテゴリ別＋`safety_margin_boundary`は8水準別に層化、
+design 600件・holdout 400件）を用い、全1,000件・design/holdout双方・boundary全水準で評価した。
+
+| 候補 | 判定式 | 危険な誤合格（全1000） | `proxy_acceptance_rate`（分母403） | design/holdout |
+| --- | --- | --- | --- | --- |
+| P1 | `max(gap) > safety_margin+EPS_GEOM` | 0 | 403/403=1.000000 | 1.000000/1.000000 |
+| P2 | `max(gap) > safety_margin+internal_extra+EPS_GEOM` | 0 | 316/403=0.784120 | 0.779592/0.791139 |
+| P3 | P1と分配則（AABB膨張の可換性）で数学的に同値。独立候補として不採点 | — | — | — |
+| **P4（採用）** | `distance_sq=Σgap_i² > (safety_margin+EPS_GEOM)²` | **0** | **403/403=1.000000** | **1.000000/1.000000** |
+
+`gap`は共通のper-axis隙間式（`gap_i = max(0, max(a_min_i-b_max_i, b_min_i-a_max_i))`）。P2の
+boundary内訳は`delta_mm=0.5/1.0/5.0`水準で0/24・0/25・0/24（`internal_extra`の追加5mmが
+公式ぎりぎりの正水準を過剰棄却）、`delta_mm=20.0`のみ24/25。P1とP4は全1,000件で完全一致した
+（221件で最近接ペアが2軸以上で分離＝対角分離していたが、いずれも大マージンケースかつ
+boundary/blockedカテゴリの閾値ぎりぎりケースは生成設計上すべて単一軸分離のため、両候補は
+本ゴールデン上では区別できない）。P4採用の理由は、本ゴールデンが未網羅の対角分離境界ケースに
+対しても理論的な安全マージンが最大になるため。
+
+**片側安全性の証明**：`gap`の非零成分（分離軸）のみがピタゴラスで合成されるため
+`d(A,B)=sqrt(Σgap_i²) >= max_i(gap_i)`（P1〜P3の根拠）。squared比較は非負領域で単調のため
+`distance_sq > margin² ⇔ d(A,B) > margin`（P4の根拠）。各AABBは対応collision bodyの超集合
+（既配置は回転後AABB⊇実箱、棚raw AABB＝公式bodyそのもの）であるため
+`d(A,B) <= 真のmesh間最短距離`。ゆえに`d(A,B) > safety_margin ⇒ 真のmesh間最短距離 >
+safety_margin ⇒ 公式pass`。`proxy_pass ⇒ official_pass`が式で確認できる。
+
+### L.5 `_container_geometry_key`（`state.py`）の拡張根拠
+
+既存キー（`offset_x`／`inner_min_rel`／`inner_max_rel`／`cell`／クリップ後`shelf_boxes`由来tuple／
+`cut_planes`由来tuple）から生成元入力（`length`/`width`/`height`/`thickness`/`cut_x`/`cut_y`/
+`buffer`/`require_shelf`）が一意に復元できるかを検証した。`thickness`は`inner_min_rel[2]`から
+直接、`length`/`width`は`thickness`確定後に`inner_min_rel`/`inner_max_rel`のX/Y成分から復元
+できる。しかし`height`と`buffer`は`inner_max_rel[2]=height+buffer-thickness`という「和」しか
+既存キーに現れず、個別分離には`shelf_boxes`のZ方向半径（`thickness/2`、クリップで通常保存される）
+が必要になる。ところがクリップ後`shelf_boxes`は`_clip_shelf_aabb`のEPS_GEOMフィルタにより、
+度外れなconfig（`cut_x`が極端に小さい等、既存fixtureの既知不整合§K.5と同種）で空集合になり得る
+ため、`height`/`buffer`の個別復元が既存キーだけで常に一意保証できるとは証明できなかった。
+安全側の最小修正として、`_container_geometry_key`へ上記6フィールドを直接追加する（間接的な
+復元可能性に依拠しない）方針に確定した。編集範囲は`state.py`・`tests/test_state_rebuild.py`・
+`tests/test_container_space.py`とする（`tests/test_state.py`は`build_state`の出力契約自体が
+不変のため対象外）。
+
+### L.6 性能実測記録
+
+提案APIの型付きシグネチャ（`l_path_sweep_boxes`が(Y,X)固定2-tuple、`check_l_path`がbool）を
+そのまま呼び出す構成で計測した。状態（`ContainerSpace`の`path_*`6フィールド・
+`path_obstacle_boxes_rel`固定キャッシュ・`PlacedItem`相当の`aabb_min_rel`/`aabb_max_rel`）は
+ループ外で1回だけ構築し（`build_state`相当の1回コストとして計測対象外）、既配置80個・raw棚1個
+（`require_shelf=False`のシーン、小棚のみ）に対し3,000件の乱数candidateで計測した。
+
+```
+median = 0.077049 ms
+p95    = 0.094093 ms
+max    = 1.144084 ms
+```
+
+正式DoD（p95<1.0ms/candidate）はMET。maxの外れ値（1.144ms、3,000回中1回）はPythonインタプリタ/GC
+ジッタと推定し、報告のみで合否には使用しない。この予算達成は、障害物集合（既配置AABB・raw棚AABB）
+を候補ごとに再構築せず、既存`PlacedItem.aabb_min_rel/max_rel`・
+`ContainerSpace.path_obstacle_boxes_rel`のキャッシュをそのまま再利用する実装を前提とする
+（候補ごとに素朴に再構築する実装では、同条件でmedian=1.38ms・p95=1.61msとなり予算未達となることを
+確認済み）。型付きAPI実装は全1,000件ゴールデンでも独立に再評価し、`proxy_acceptance_rate=403/403`・
+`dangerous_false_accept=0`がL.4の結果と完全一致することを確認した。
+
+---
+
 ## 更新履歴
 
 | 日付 | 内容 |
@@ -488,3 +605,4 @@ z方向を拘束しない面（XY方向のみの制約）。`floor_z`/`ceil_z` �
 | 2026-07-17 | T-007 仕様追記：§K.7 にセル中心座標規約（`x_c[i]=inner_min_rel[0]+(i+0.5)*cell`等）・`nx`/`ny`算出式（T-006既存式を正式仕様化）・端数セルの面積補正なし方針・セル中心が`inner_max_rel`を超えないことの数学的証明を追記。T-006実装との矛盾なし。`実装詳細仕様書.md` §4.2 を同方針で修正 |
 | 2026-07-17 | T-012 計画中に発覚した不一致を訂正：§E に `spacing` が agent I/F に不在である旨を追記。§I-8 を新設し、コンテナ原点世界X（`offset_x`）の取得元を `i * spacing`（`init_states` に不在の値）ではなく `cdict["center"][0]`（`containers.py:61,66,238–240` により `center[0]==offset_x` が恒等的に成立）とする解決方針を記録。`実装詳細仕様書.md` §3.1/§4.2/§4.4・`初期検討_実装手順書.md` §1.2 を同方針で修正 |
 | 2026-07-18 | T-012 テスト作成に先立ち §H に追記：`is_soft`→`kind` が非単射で復元不能であることを根拠に、`ItemSpec.kind` を `str \| None` とし `build_state` 経由（＝公式observationからの構築）では常に `None` とする方針を記録。提出時のランタイム方策は `kind` に依存せず `is_soft`/`is_priority` を使う旨、学習データ生成側で `kind` を保持できても推論経路では利用可能と仮定しない旨を明記。`実装詳細仕様書.md` §3.3/§4.4・`初期検討.md`・`初期検討_実装手順書.md` を同方針で修正 |
+| 2026-07-19 | T-016B解禁の仕様追補：§L新設。T-016Aゴールデン1,000件を実ファイルから再検収（spy全件再検証含め不一致0件）、A15をconfirmed化する写像6フィールドを確定（うち2値は既存`inner_min_rel[2]`/`inner_max_rel[2]`と恒等一致することを数値確認し最小化）、経路障害物はraw AABB必須（クリップ後`shelf_boxes`不採用）と確定、プロキシP1/P2/P3/P4を全1,000件・design/holdout分割・boundary8水準で比較しP4（squared-distance、`internal_extra`なし）を採用（危険な誤合格0件・`proxy_acceptance_rate`403/403=1.000000）、片側安全性を式で証明、`_container_geometry_key`の既存キーからの復元可能性の限界（`height`/`buffer`分離が退化shelf-clipで保証できない）を根拠に`state.py`拡張の方針を確定、提案APIをそのまま呼ぶ構成で性能実測（p95=0.094093ms、MET）を記録。`実装詳細仕様書.md` §3.5/§3.6/§4.2/§4.5/§6 を同方針で修正。根拠は本セッションでのユーザー承認事項（Gate 1分析承認・Gate 2最終仕様承認） |
