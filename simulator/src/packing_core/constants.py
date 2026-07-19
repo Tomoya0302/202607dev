@@ -33,6 +33,7 @@ class PlacementParams:
     ceiling_margin: float = 0.018
     internal_extra: float = 0.005      # 内部判定の厳格化幅
     start_margin: float = 0.01         # A15確定、T-016B
+    candidate_generation_slack: float = 1e-6  # v1.16追加、T-024所有（float32往復の数値ガード、§3.5）
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,27 @@ class ScoreParams:
     w_cg_h: float = 0.3
     w_soft: float = 0.8
     w_prio: float = 0.4
+
+
+@dataclass(frozen=True)
+class ProvisionalRiskParams:
+    """provisional_p_ng の線形結合重み（§4.7、T-024所有・単一情報源）。
+
+    ScoreParams とは独立したフィールド集合を持つ（重複キーなし、CONST-008）。
+
+    Attributes:
+        w_support_gap: 支持不足 (1-support_ratio) に対する重み。
+        w_negative_cg: 負のcg_margin (max(0,-cg_margin)) に対する重み。
+        cg_scale: cg_margin不足量のスケール係数。
+        p_min: p_ng の下限クリップ値。
+        p_max: p_ng の上限クリップ値（非有限入力時のフォールバック値でもある）。
+    """
+
+    w_support_gap: float = 0.6
+    w_negative_cg: float = 0.4
+    cg_scale: float = 10.0
+    p_min: float = 0.0
+    p_max: float = 0.95
 
 
 @dataclass(frozen=True)
