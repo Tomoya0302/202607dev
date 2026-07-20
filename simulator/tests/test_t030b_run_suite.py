@@ -1264,23 +1264,38 @@ def test_c05_004_official_build_direct_verification():
     """②公式環境構築を直接実行し、settle後の packed_items数1・index一致・inside判定成功を確認する。
 
     DoD必須（PyBulletが利用可能なこの環境で実際にpassさせる。skipはDoD達成とみなさない）。
-    `evaluator.py`/`validator.check_inclusion` はこの config の `inclusion_margin=-0.005` に対し
-    floor面ちょうど接地（zero-slack）placementを恒常的に非包含扱いする既知の縁ケースを持つため
-    （T-024 heuristicエージェントの本番配置でも同型の "not included" が再現することを事前調査で
-    実測確認済み。validator NG自体は既存DoDで不合格としない）、本テストでは production の
-    `container_space.contains_oriented_box`（masks.py DIMS段が使う実containment判定、
-    margin=0で面接触を許容する契約）を、PyBullet剛体接触解決による実測10^-5m オーダーの
-    めり込み（settling tolerance）を許容する `margin=-1e-3` で用いる。
+
+    **v1.21契約**：②の「inside判定」は実行時スコアの再現ではなく、`MultiContainerManager.build`
+    settle後の途中積付itemに対する post-settle 幾何妥当性検証と位置づける。判定には本番実装
+    `src.ground_handling.evaluator.Evaluator.calculate_fill_rate` をそのまま使用し（別関数・
+    再実装への差し替えは行わない）、本検証専用の `inclusion_margin=+0.001`（PyBullet実測最大
+    沈み込み約4.43e-5mを十分包含しつつ1mmを超える逸脱は許容しない固定の検証公差）を用いる。
+    この検証margin値は `run_suite`／policy実行／通常の `run_local` 結果／suite score／
+    `--baseline` 比較のいずれへも流用しない（`c05.json` の `validator.inclusion_margin=-0.005`
+    は変更しない、本検証手続き専用）。検証に用いるcontainer設定は `c05.json` をdeep copyした
+    ものを使い、`c05.json` 自体は変更しない。
+
+    確認項目：`packed_items` 数1・対象itemの `index` 一致・**かつ**対象itemが
+    `Evaluator.calculate_fill_rate` の `out_items`（inside不合格として除外された荷物）に
+    含まれないこと（positive control）。加えて、床面へ1mmを超えてめり込ませた配置・側面へ
+    1mmを超えて突出させた配置では、同一のEvaluator判定が不合格になることも確認する
+    （negative control：検証公差が無条件に緩いわけではないことを示す）。
     """
+    import copy
+
     pytest.importorskip("pybullet")
     import pybullet as p
     from pybullet_utils.bullet_client import BulletClient
     from src.ground_handling.containers import MultiContainerManager
+    from src.ground_handling.evaluator import Evaluator
     from src.packing_core.constants import GridParams
-    from src.packing_core.container_space import build_container_space, contains_oriented_box
+    from src.packing_core.container_space import build_container_space
+
+    _VERIFICATION_INCLUSION_MARGIN = 0.001  # v1.21: C05-004検証専用（他契約へ流用しない）
+    _NEGATIVE_CONTROL_OVERSHOOT = 0.0015  # >1mm（許容公差0.001mを超える）ずらす
 
     task = _load_c05_container_cfg()
-    containers_cfg = task["containers"]
+    containers_cfg = copy.deepcopy(task["containers"])  # c05.json自体は変更しない
     expected_index = containers_cfg["container_list"][0]["packed_items"][0]["index"]
 
     client = BulletClient(connection_mode=p.DIRECT)
@@ -1294,6 +1309,14 @@ def test_c05_004_official_build_direct_verification():
         assert item.index == expected_index
         assert item.pos is not None and item.orn is not None
 
+        evaluator = Evaluator(client=client, config={"inclusion_margin": _VERIFICATION_INCLUSION_MARGIN})
+
+        # --- positive control: 実settle poseはinside判定に成功する（out_itemsに含まれない） ---
+        _, out_items = evaluator.calculate_fill_rate([container])
+        out_indices = {it.index for it in out_items}
+        assert item.index not in out_indices
+
+        # 側面protrusionの負例に使う実コンテナ幾何（実settle済みcontainerのn_vecs/pointsから復元）
         cdict = {
             "index": container.index, "length": container.length, "width": container.width,
             "height": container.height, "thickness": container.thickness,
@@ -1303,9 +1326,23 @@ def test_c05_004_official_build_direct_verification():
         }
         space = build_container_space(cdict, index=container.index, cell=GridParams().cell)
         offset_x = container.center[0]
-        center_rel = (item.pos[0] - offset_x, item.pos[1], item.pos[2])
-        osize = (item.length, item.width, item.height)
-        inside = contains_oriented_box(space, center_rel=center_rel, osize=osize, margin=-1e-3)
-        assert inside is True
+        settled_pos = item.pos
+        settled_orn = item.orn
+
+        # --- negative control 1: 床面へ1mmを超えてめり込ませる ---
+        floor_penetrating_pos = (
+            settled_pos[0], settled_pos[1], settled_pos[2] - _NEGATIVE_CONTROL_OVERSHOOT
+        )
+        item.set_pose(client, pos=floor_penetrating_pos, orn=settled_orn)
+        _, out_items_floor = evaluator.calculate_fill_rate([container])
+        assert item.index in {it.index for it in out_items_floor}
+
+        # --- negative control 2: 側面へ1mmを超えて突出させる（+X側の壁を越える） ---
+        half_length = item.length / 2.0
+        protruding_x_rel = float(space.inner_max_rel[0]) - half_length + _NEGATIVE_CONTROL_OVERSHOOT
+        protruding_pos = (offset_x + protruding_x_rel, settled_pos[1], settled_pos[2])
+        item.set_pose(client, pos=protruding_pos, orn=settled_orn)
+        _, out_items_wall = evaluator.calculate_fill_rate([container])
+        assert item.index in {it.index for it in out_items_wall}
     finally:
         client.disconnect()
