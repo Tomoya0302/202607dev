@@ -1,13 +1,15 @@
-"""heuristic Agent（T-023: 骨格／T-024: 手順2〜7縦断実装）。
+"""heuristic Agent（T-023: 骨格／T-024: 手順2〜7／T-027: warmup・optimize）。
 
 公式 `AgentFactory` からロードできる `Agent` を定義する。`policy()` は毎呼出しで
 `build_state`→候補列挙→段階フィルタ→特徴計算→`heuristic_score`→`safe_decide`4層→
 `make_action` を配線し（詳細仕様書 §4.12）、例外・候補ゼロ・全層None・action変換失敗の
 いずれの場合も最外殻emergency actionへフォールバックしてプロセス外へ例外を漏らさない
-（§4.11「最外殻emergency action」）。T-027以降が担う `__init__` ウォームアップ・`optimize`
-本格化・JSONL出力・学習済み `RiskModel` はここでは実装しない。
+（§4.11「最外殻emergency action」）。`__init__`は合成dummyで同じ手順2〜7を1回空回しし、
+`optimize`は体積・重量で入力位置を並べて公式item index列を返す（§4.12 v1.23）。
 """
 import functools
+import logging
+import math
 import time
 
 import numpy as np
@@ -33,6 +35,101 @@ from src.packing_core.watchdog import (
     layer4_max_p,
     safe_decide,
 )
+
+logger = logging.getLogger("packing")
+
+
+def _new_timing() -> dict:
+    """policy/warmup単位の段階時間accumulatorを返す。"""
+    return {"t_state": 0.0, "t_enum": 0.0, "t_mask": 0.0, "t_lpath": 0.0, "t_total": 0.0}
+
+
+def _new_local_telemetry() -> dict:
+    """policy/warmup単位の局所telemetryを返す。"""
+    return {
+        "n_cand0": 0,
+        "n_after_dims": 0,
+        "n_after_geo": 0,
+        "n_lpath_pass": 0,
+        "reject_reason_counts": {},
+        "decided_layer": 0,
+        "layer_error": [],
+    }
+
+
+def _make_warmup_inputs() -> tuple[dict, dict]:
+    """T-027の自己完結小型dummy init/observationを返す。"""
+    inner_min = np.asarray((-0.40, -0.40, 0.02), dtype=np.float64)
+    inner_max = np.asarray((0.40, 0.40, 1.02), dtype=np.float64)
+    mid = (inner_min + inner_max) / 2.0
+    face_specs = [
+        ((inner_min[0], mid[1], mid[2]), (-1.0, 0.0, 0.0)),
+        ((inner_max[0], mid[1], mid[2]), (1.0, 0.0, 0.0)),
+        ((mid[0], inner_min[1], mid[2]), (0.0, -1.0, 0.0)),
+        ((mid[0], inner_max[1], mid[2]), (0.0, 1.0, 0.0)),
+        ((mid[0], mid[1], inner_min[2]), (0.0, 0.0, -1.0)),
+        ((mid[0], mid[1], inner_max[2]), (0.0, 0.0, 1.0)),
+    ]
+    thickness = 0.02
+    buffer = 0.02
+    height = float(inner_max[2]) + buffer
+    container = {
+        "index": 0,
+        "length": float(inner_max[0] - inner_min[0]) + 2.0 * thickness,
+        "width": float(inner_max[1] - inner_min[1]) + 2.0 * thickness,
+        "height": height,
+        "cut_x": 0.0,
+        "cut_y": 0.0,
+        "thickness": thickness,
+        "center": (0.0, 0.0, height / 2.0 + buffer),
+        "n_vecs": [normal for _, normal in face_specs],
+        "points": [tuple(float(v) for v in point) for point, _ in face_specs],
+        "volume": float(np.prod(inner_max - inner_min)),
+        "shelf": False,
+        "is_prioritized": False,
+        "packed_items": [],
+    }
+    item = {
+        "index": 0,
+        "length": 0.10,
+        "width": 0.10,
+        "height": 0.10,
+        "mass": 1.0,
+        "is_prioritized": False,
+        "is_soft": False,
+        "belongs_to": None,
+        "pos": None,
+        "orn": None,
+        "lateralFriction": 0.5,
+        "rollingFriction": 0.01,
+        "spinningFriction": 0.01,
+        "restitution": 0.0,
+        "angularDamping": 0.8,
+    }
+    placed_item = dict(item)
+    placed_item.update(
+        {
+            "index": 99,
+            "length": 0.20,
+            "width": 0.20,
+            "height": 0.20,
+            "mass": 2.0,
+            "belongs_to": 0,
+            "pos": (0.0, 0.0, 0.12),
+            "orn": (0.0, 0.0, 0.0, 1.0),
+        }
+    )
+    observation_container = dict(container)
+    observation_container["packed_items"] = [placed_item]
+    init = {"optimize": False, "lookahead_k": 1, "container_list": [container]}
+    observation = {
+        "optimize": False,
+        "lookahead_k": 1,
+        "depth_map": np.zeros((1, 4, 4), dtype=np.float32),
+        "container_list": [observation_container],
+        "pool_list": [item],
+    }
+    return init, observation
 
 
 def _emergency_action(observation: dict) -> dict:
@@ -65,10 +162,10 @@ class Agent:
     """heuristic 積付 Agent（T-023骨格→T-024縦断実装）。"""
 
     def __init__(self, module_path: str) -> None:
-        """最小限の初期化のみ行う。
+        """パラメータとtelemetryを初期化し、合成dummyを1回ウォームアップする。
 
-        モデル・設定ファイルの読込、ウォームアップ（T-027 責務）、状態構築、
-        ファイル出力、telemetry 生成は行わない。パラメータ群は種別ごとに独立した
+        ウォームアップは実init_statesを使わず、ファイル/telemetry出力や
+        `_policy_step`の更新を行わない。パラメータ群は種別ごとに独立した
         属性として保持する（`PlacementParams`/`TimeParams`/`StageParams`/`ScoreParams`/
         `ProvisionalRiskParams` を1つにまとめない）。
 
@@ -85,6 +182,22 @@ class Agent:
         # 一度だけ生成する（§4.13）。policy呼出し通番はAgentインスタンスごとに0始まり。
         self._telemetry_writer = make_writer_from_env()
         self._policy_step = 0
+        self._run_warmup()
+
+    def _run_warmup(self) -> None:
+        """T-027の合成dummyで手順2〜7を1回実行する。"""
+        init, observation = _make_warmup_inputs()
+        try:
+            self._run_pipeline(
+                observation,
+                init,
+                _new_timing(),
+                _new_local_telemetry(),
+                {"value": None},
+                allow_emergency=False,
+            )
+        except Exception as exc:
+            logger.warning("agent warmup failed; continuing without retry: %s", exc)
 
     def get_init_states(self, init_states: dict) -> None:
         """公式から渡される初期状態を保持する。
@@ -106,18 +219,67 @@ class Agent:
         self.container_list = init_states["container_list"]
 
     def optimize(self, item_list: list[dict]) -> list[int]:
-        """全荷物の積み込み順を決定する（T-023 は入力順を維持）。
+        """体積降順・同体積はmass降順で公式item index列を返す。
 
-        体積・重量等による並べ替えは T-027 の責務。本メソッドは `item_list` を
-        変更せず、各荷物の公式 `item["index"]` を入力順のまま返す。
+        indexは必須の一意な整数（bool禁止）。sort材料が1件でも不正な場合は、
+        公式indexの入力順へ全体をフォールバックする（§4.12 v1.23）。
 
         Args:
             item_list: 全荷物の情報が格納された辞書のリスト。
 
         Returns:
-            list[int]: 全荷物の公式 index を過不足なく1回ずつ含む、入力順のリスト。
+            list[int]: 全荷物の公式 index を過不足なく1回ずつ含むリスト。
+
+        Raises:
+            ValueError: indexが欠落・非整数・bool・重複の場合。
         """
-        return [int(item["index"]) for item in item_list]
+        indices: list[int] = []
+        for position, item in enumerate(item_list):
+            try:
+                raw_index = item["index"]
+            except (KeyError, TypeError) as exc:
+                raise ValueError(f"item_list[{position}] index is required") from exc
+            if isinstance(raw_index, (bool, np.bool_)) or not isinstance(
+                raw_index, (int, np.integer)
+            ):
+                raise ValueError(f"item_list[{position}] index must be an integer")
+            indices.append(int(raw_index))
+
+        if len(set(indices)) != len(indices):
+            raise ValueError("item index values must be unique")
+
+        numeric_types = (int, float, np.integer, np.floating)
+        try:
+            metrics: list[tuple[float, float]] = []
+            for item in item_list:
+                values = []
+                for key in ("length", "width", "height", "mass"):
+                    raw_value = item[key]
+                    if isinstance(raw_value, (bool, np.bool_)) or not isinstance(
+                        raw_value, numeric_types
+                    ):
+                        raise ValueError(f"{key} must be numeric")
+                    value = float(raw_value)
+                    if not math.isfinite(value):
+                        raise ValueError(f"{key} must be finite")
+                    values.append(value)
+
+                length, width, height, mass = values
+                if length <= 0.0 or width <= 0.0 or height <= 0.0 or mass < 0.0:
+                    raise ValueError("dimensions must be positive and mass must be nonnegative")
+                volume = length * width * height
+                if not math.isfinite(volume):
+                    raise ValueError("volume must be finite")
+                metrics.append((volume, mass))
+
+            sorted_positions = sorted(
+                range(len(item_list)),
+                key=lambda i: (-metrics[i][0], -metrics[i][1], i),
+            )
+        except Exception:
+            return list(indices)
+
+        return [indices[position] for position in sorted_positions]
 
     def policy(self, observation: dict) -> dict:
         """観測から実候補を選び action を返す（§4.12 手順2〜7）。
@@ -144,11 +306,8 @@ class Agent:
         """
         step = self._policy_step
         first_step = step == 0
-        timing = {"t_state": 0.0, "t_enum": 0.0, "t_mask": 0.0, "t_lpath": 0.0, "t_total": 0.0}
-        local_telemetry = {
-            "n_cand0": 0, "n_after_dims": 0, "n_after_geo": 0, "n_lpath_pass": 0,
-            "reject_reason_counts": {}, "decided_layer": 0, "layer_error": [],
-        }
+        timing = _new_timing()
+        local_telemetry = _new_local_telemetry()
         png_holder = {"value": None}
         t_policy_start = time.monotonic()
         try:
@@ -186,6 +345,35 @@ class Agent:
             png_holder: 選択済みCandidateの`provisional_p_ng`を`"value"`キーへ保持する
                 1キー辞書（make_action失敗後もemergencyへフォールバックする前に確定済み）。
         """
+        init = {
+            "optimize": self.optimize_enabled,
+            "lookahead_k": self.lookahead_k,
+            "container_list": self.container_list,
+        }
+        return self._run_pipeline(
+            observation,
+            init,
+            timing,
+            local_telemetry,
+            png_holder,
+            allow_emergency=True,
+        )
+
+    def _run_pipeline(
+        self,
+        observation: dict,
+        init: dict,
+        timing: dict,
+        local_telemetry: dict,
+        png_holder: dict,
+        *,
+        allow_emergency: bool,
+    ) -> dict:
+        """実policyとT-027 warmupが共有する手順2〜7パイプライン。
+
+        `allow_emergency=False`のwarmupでは未到達・変換失敗を例外として呼び出し側へ返し、
+        `_run_warmup()`がwarningを残す。実policyは従来どおりemergency actionへ退避する。
+        """
         t0 = time.monotonic()
         budget = StepBudget(
             t0=t0, soft=self.time_params.policy_soft, hard=self.time_params.policy_hard,
@@ -193,13 +381,10 @@ class Agent:
 
         t_state_start = time.monotonic()
         try:
-            init = {
-                "optimize": self.optimize_enabled,
-                "lookahead_k": self.lookahead_k,
-                "container_list": self.container_list,
-            }
             state = build_state(observation, init)
         except Exception:
+            if not allow_emergency:
+                raise
             return _emergency_action(observation)
         finally:
             timing["t_state"] = time.monotonic() - t_state_start
@@ -212,6 +397,8 @@ class Agent:
         finally:
             timing["t_enum"] = time.monotonic() - t_enum_start
         if len(raw_candidates) == 0:
+            if not allow_emergency:
+                raise RuntimeError("warmup generated no candidates")
             return _emergency_action(observation)
 
         t_mask_start = time.monotonic()
@@ -222,6 +409,8 @@ class Agent:
         finally:
             timing["t_mask"] = time.monotonic() - t_mask_start
         if len(pools.dims_candidates) == 0:
+            if not allow_emergency:
+                raise RuntimeError("warmup generated no DIMS candidates")
             return _emergency_action(observation)
 
         # Agent配線契約（§4.12「Agent配線契約」）: dims_candidatesの各候補へ
@@ -271,6 +460,8 @@ class Agent:
             timing["t_lpath"] = time.monotonic() - t_lpath_start
 
         if decided is None:
+            if not allow_emergency:
+                raise RuntimeError("warmup safe_decide returned no candidate")
             return _emergency_action(observation)
 
         # T-028 D5: 選択済みCandidateのprovisional_p_ngは、この後のaction変換
@@ -285,4 +476,6 @@ class Agent:
                 orientation=decided.orientation,
             )
         except Exception:
+            if not allow_emergency:
+                raise
             return _emergency_action(observation)
