@@ -759,9 +759,45 @@ def test_cgroup_effective_cpu_is_minimum_positive_limit_and_stricter_limits_pass
 
 
 @pytest.mark.parametrize(
+    ("quota", "cpuset", "expected_effective"),
+    [
+        ("400000 100000", "0-1", 2.0),  # quota=4, cpuset=2 -> min=2.0
+        ("200000 100000", "0-15", 2.0),  # quota=2, cpuset=16 -> min=2.0
+        ("max 100000", "0-1", 2.0),  # quota=unlimited, cpuset=2 -> cpusetのみ有効、2.0
+    ],
+    ids=["quota4-cpuset2", "quota2-cpuset16", "quota-unlimited-cpuset2"],
+)
+def test_cgroup_effective_cpu_is_min_of_available_finite_positive_axes(
+    tmp_path, monkeypatch, quota, cpuset, expected_effective
+):
+    """有効CPU上限は利用可能な有限・正のhard limitの最小値。片方が緩くても他方が救済しない。"""
+    env = _environment(tmp_path, monkeypatch)
+    env.linux.write_cgroup_v2(quota=quota, cpuset=cpuset)
+    code, report = _run(env)
+    limits = report["environment"]
+    assert code == 0
+    assert limits["effective_cpu_limit"] == expected_effective
+    assert limits["container_limits_verified"] is True
+
+
+@pytest.mark.parametrize(
     "invalid_kind",
-    ["cpu-over", "memory-over", "unlimited", "invalid-or-unavailable"],
-    ids=["cpu-over", "memory-over", "unlimited", "invalid-and-unavailable"],
+    [
+        "cpu-over",
+        "cpu-quota-and-cpuset-both-over",
+        "cpu-no-positive-candidate",
+        "memory-over",
+        "unlimited",
+        "invalid-or-unavailable",
+    ],
+    ids=[
+        "cpu-over",
+        "cpu-quota-and-cpuset-both-over",
+        "cpu-no-positive-candidate",
+        "memory-over",
+        "unlimited",
+        "invalid-and-unavailable",
+    ],
 )
 def test_cgroup_invalid_or_unverifiable_limits_exit_2(tmp_path, monkeypatch, invalid_kind):
     """Over-limit, unlimited, malformed, and unavailable controller data are input errors."""
@@ -773,7 +809,15 @@ def test_cgroup_invalid_or_unverifiable_limits_exit_2(tmp_path, monkeypatch, inv
         with monkeypatch.context() as scoped:
             env = _environment(tmp_path, scoped, f"{invalid_kind}-{index}")
             if mode == "cpu-over":
-                env.linux.write_cgroup_v2(quota="200001 100000")
+                # 有限・正のhard limitの最小値が2.0を超える：quota=2.00001, cpuset=4（両軸とも超過）。
+                env.linux.write_cgroup_v2(quota="200001 100000", cpuset="0-3")
+            elif mode == "cpu-quota-and-cpuset-both-over":
+                # 有限・正の候補2件（quota=4, cpuset=4）の最小値も4で2.0を超える。
+                env.linux.write_cgroup_v2(quota="400000 100000", cpuset="0-3")
+            elif mode == "cpu-no-positive-candidate":
+                # quota=unlimitedかつcpusetが空文字列＝有効な有限・正の候補が0件。
+                # "0-63"のような有限値は「64 CPU制約」であり「制約なし」の表現として不適切なため使わない。
+                env.linux.write_cgroup_v2(quota="max 100000", cpuset="")
             elif mode == "memory-over":
                 env.linux.write_cgroup_v2(memory_max=str(MEMORY_LIMIT_BYTES + 1))
             elif mode == "unlimited":
