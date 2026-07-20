@@ -12,6 +12,7 @@ import time
 
 import numpy as np
 
+from agents.heuristic.telemetry import format_row, make_writer_from_env
 from src.packing_core.candidates import enumerate_candidates, filter_candidates
 from src.packing_core.constants import (
     PlacementParams,
@@ -80,6 +81,10 @@ class Agent:
         self.stage_params = StageParams()
         self.score_params = ScoreParams()
         self.risk_params = ProvisionalRiskParams()
+        # T-028: telemetry writer は起動時の環境変数（TELEMETRY_DIR/TELEMETRY_RUN_ID）から
+        # 一度だけ生成する（§4.13）。policy呼出し通番はAgentインスタンスごとに0始まり。
+        self._telemetry_writer = make_writer_from_env()
+        self._policy_step = 0
 
     def get_init_states(self, init_states: dict) -> None:
         """公式から渡される初期状態を保持する。
@@ -124,6 +129,12 @@ class Agent:
         action変換失敗のいずれの場合も、プロセス外へ例外を漏らさず最外殻emergency
         actionへフォールバックする（§4.11）。
 
+        T-028: 本メソッドが telemetry accumulator（段階時間・局所telemetry・選択済み
+        `p_ng_chosen`）の最外殻オーナーであり、正常・emergency全return経路について
+        最外殻 `finally` から行整形・書込みを1回だけ試行する（§4.12/§4.13）。書込みの
+        成否に関わらず `self._policy_step` を1増加する。writer例外は`policy()`外へ
+        漏らさない。
+
         Args:
             observation: 現在の観測情報（変更しない）。
 
@@ -131,18 +142,56 @@ class Agent:
             dict: `item_idx` / `container_idx` / `place_pos` / `orientation` の
             4キーのみを持つ action 辞書。
         """
+        step = self._policy_step
+        first_step = step == 0
+        timing = {"t_state": 0.0, "t_enum": 0.0, "t_mask": 0.0, "t_lpath": 0.0, "t_total": 0.0}
+        local_telemetry = {
+            "n_cand0": 0, "n_after_dims": 0, "n_after_geo": 0, "n_lpath_pass": 0,
+            "reject_reason_counts": {}, "decided_layer": 0, "layer_error": [],
+        }
+        png_holder = {"value": None}
+        t_policy_start = time.monotonic()
         try:
-            return self._policy_impl(observation)
-        except Exception:
-            return _emergency_action(observation)
+            try:
+                return self._policy_impl(observation, timing, local_telemetry, png_holder)
+            except Exception:
+                return _emergency_action(observation)
+        finally:
+            # t_total: policy入口からaction生成完了後、telemetry serialize/write開始直前まで
+            # （writer I/O時間は含めない、§4.13）。
+            timing["t_total"] = time.monotonic() - t_policy_start
+            try:
+                row = format_row(
+                    step=step, first_step=first_step, timing=timing,
+                    local_telemetry=local_telemetry, p_ng_chosen=png_holder["value"],
+                )
+                self._telemetry_writer.write_row(row)
+            except Exception:
+                pass
+            self._policy_step += 1
 
-    def _policy_impl(self, observation: dict) -> dict:
-        """`policy()` の本体実装（例外は呼び出し側 `policy()` が最終捕捉する）。"""
+    def _policy_impl(
+        self, observation: dict, timing: dict, local_telemetry: dict, png_holder: dict,
+    ) -> dict:
+        """`policy()` の本体実装（例外は呼び出し側 `policy()` が最終捕捉する）。
+
+        Args:
+            observation: 現在の観測情報（変更しない）。
+            timing: 呼び出し側が用意した段階時間辞書。各段階を`try/finally`で計測し
+                in-place更新する（§4.13）。
+            local_telemetry: 呼び出し側が用意した局所telemetry辞書。
+                `n_cand0`/`n_after_dims`/`n_after_geo`/`n_lpath_pass`/
+                `reject_reason_counts`をin-place更新し、`decided_layer`/`layer_error`は
+                `safe_decide`が直接書き込む（再計算しない）。
+            png_holder: 選択済みCandidateの`provisional_p_ng`を`"value"`キーへ保持する
+                1キー辞書（make_action失敗後もemergencyへフォールバックする前に確定済み）。
+        """
         t0 = time.monotonic()
         budget = StepBudget(
             t0=t0, soft=self.time_params.policy_soft, hard=self.time_params.policy_hard,
         )
 
+        t_state_start = time.monotonic()
         try:
             init = {
                 "optimize": self.optimize_enabled,
@@ -152,16 +201,26 @@ class Agent:
             state = build_state(observation, init)
         except Exception:
             return _emergency_action(observation)
+        finally:
+            timing["t_state"] = time.monotonic() - t_state_start
 
-        raw_candidates = enumerate_candidates(
-            state, self.placement_params, self.time_params, budget
-        )
+        t_enum_start = time.monotonic()
+        try:
+            raw_candidates = enumerate_candidates(
+                state, self.placement_params, self.time_params, budget
+            )
+        finally:
+            timing["t_enum"] = time.monotonic() - t_enum_start
         if len(raw_candidates) == 0:
             return _emergency_action(observation)
 
-        pools = filter_candidates(
-            state, raw_candidates, self.placement_params, self.time_params, budget
-        )
+        t_mask_start = time.monotonic()
+        try:
+            pools = filter_candidates(
+                state, raw_candidates, self.placement_params, self.time_params, budget
+            )
+        finally:
+            timing["t_mask"] = time.monotonic() - t_mask_start
         if len(pools.dims_candidates) == 0:
             return _emergency_action(observation)
 
@@ -177,17 +236,13 @@ class Agent:
             cand.features["cg_margin"] = float(margin)
             cand.features["provisional_p_ng"] = float(p_ng)
 
-        # telemetryローカル辞書契約（§4.12）: filter_candidates完了後・safe_decide呼出し前に
-        # 新規辞書を生成する。n_lpath_passはこの時点で0初期化（path_candidatesはまだ空）。
-        telemetry = {
-            "n_cand0": len(pools.raw_candidates),
-            "n_after_dims": len(pools.dims_candidates),
-            "n_after_geo": len(pools.geo_candidates),
-            "n_lpath_pass": 0,
-            "reject_reason_counts": dict(pools.reject_counts),
-            "decided_layer": 0,
-            "layer_error": [],
-        }
+        # telemetryローカル辞書契約（§4.12）: filter_candidates完了後・safe_decide呼出し前に、
+        # 呼び出し側から渡された辞書をin-place更新する。n_lpath_passはこの時点で0のまま
+        # （path_candidatesはまだ空）。
+        local_telemetry["n_cand0"] = len(pools.raw_candidates)
+        local_telemetry["n_after_dims"] = len(pools.dims_candidates)
+        local_telemetry["n_after_geo"] = len(pools.geo_candidates)
+        local_telemetry["reject_reason_counts"] = dict(pools.reject_counts)
 
         layers = [
             functools.partial(
@@ -206,15 +261,21 @@ class Agent:
             ),
         ]
 
+        t_lpath_start = time.monotonic()
         try:
-            decided = safe_decide(layers, state, budget, telemetry)
+            decided = safe_decide(layers, state, budget, local_telemetry)
         finally:
-            # safe_decide呼出し後は戻り値の如何によらず、同一telemetry辞書のn_lpath_passを
+            # safe_decide呼出し後は戻り値の如何によらず、同一local_telemetry辞書のn_lpath_passを
             # 必ずlen(pools.path_candidates)で更新する（§4.12「telemetryローカル辞書契約」）。
-            telemetry["n_lpath_pass"] = len(pools.path_candidates)
+            local_telemetry["n_lpath_pass"] = len(pools.path_candidates)
+            timing["t_lpath"] = time.monotonic() - t_lpath_start
 
         if decided is None:
             return _emergency_action(observation)
+
+        # T-028 D5: 選択済みCandidateのprovisional_p_ngは、この後のaction変換
+        # （make_action）が失敗しemergencyへフォールバックしても保持する。
+        png_holder["value"] = decided.features.get("provisional_p_ng")
 
         try:
             return make_action(

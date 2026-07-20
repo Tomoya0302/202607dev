@@ -25,6 +25,7 @@ import argparse
 import json
 import logging
 import os
+import uuid
 
 from src.ground_handling.app import EvaluationApp
 
@@ -130,6 +131,12 @@ def main() -> None:
     args = parse_args()
     module_path = args.module_path  # 相対パス
     agent_module_path = ".".join(module_path.split("/")) + "agent"  # run_test.py と同一導出
+
+    # T-028 §5.7: EvaluationApp／Agent生成前に一度だけtelemetry出力先を環境変数へ設定する。
+    # subprocess内でAgentが再生成されても同じ環境変数を継承する。
+    config_stem = os.path.splitext(os.path.basename(args.config_path))[0]
+    os.environ["TELEMETRY_DIR"] = os.path.join(args.result_dir, "telemetry")
+    os.environ["TELEMETRY_RUN_ID"] = f"{config_stem}-{os.getpid()}-{uuid.uuid4()}"
 
     app = EvaluationApp(
         config_path=args.config_path,
