@@ -2,13 +2,14 @@
 
 `regime`／`effective_score`（T-036所有）は本チケットでは実装しない（§4.8「v1.16 追記
 （責務境界）」）。`cg_margin` はスコア式に含めない（`provisional_p_ng`・`layer4_max_p` 側でのみ
-評価する）。
+評価する）。HF-001（v1.27）：`z_top_norm`/`z_center_norm`は`cand.pos_rel[2]`ではなく
+`stability.expected_settled_pos_rel`が返す想定沈降後Zを使う（§4.8「v1.27追記」）。
 """
 import math
 
 from src.packing_core import constants
 from src.packing_core.constants import ScoreParams
-from src.packing_core.stability import soft_below_ratio, support_ratio
+from src.packing_core.stability import expected_settled_pos_rel, soft_below_ratio, support_ratio
 from src.packing_core.types import Candidate
 
 
@@ -38,7 +39,8 @@ def heuristic_score(state, cand: Candidate, sp: ScoreParams) -> float:
             `space.inner_min_rel`/`inner_max_rel` が非有限、`span` のいずれかが0以下、
             `POOL_MAX_WEIGHT` が非有限または0以下、`support_ratio`/`soft_below_ratio` の
             戻り値が非有限、`sp` の重みが非有限、`cand.item_idx` に一致する `ItemSpec` が
-            `state.pool` に一意に存在しない（0件または重複）場合。
+            `state.pool` に一意に存在しない（0件または重複）場合、`cand.container_idx`/
+            `cand.ems_id` が範囲外の場合（`expected_settled_pos_rel` 由来）。
     """
     matches = [item for item in state.pool if int(item.idx) == int(cand.item_idx)]
     if len(matches) != 1:
@@ -74,10 +76,11 @@ def heuristic_score(state, cand: Candidate, sp: ScoreParams) -> float:
     for attr in ("w_z", "w_y", "w_x", "w_support", "w_cg_h", "w_soft", "w_prio"):
         _require_finite(float(getattr(sp, attr)), attr)
 
+    settled = expected_settled_pos_rel(state, cand)
     z_top_norm = _clip01(
-        (float(cand.pos_rel[2]) + float(cand.osize[2]) / 2.0 - float(inner_min[2])) / float(span[2])
+        (float(settled[2]) + float(cand.osize[2]) / 2.0 - float(inner_min[2])) / float(span[2])
     )
-    z_center_norm = _clip01((float(cand.pos_rel[2]) - float(inner_min[2])) / float(span[2]))
+    z_center_norm = _clip01((float(settled[2]) - float(inner_min[2])) / float(span[2]))
     y_center_norm = _clip01((float(cand.pos_rel[1]) - float(inner_min[1])) / float(span[1]))
     x_center_norm = _clip01((float(cand.pos_rel[0]) - float(inner_min[0])) / float(span[0]))
     weight_norm = _clip01(float(item.weight) / float(pool_max_weight))

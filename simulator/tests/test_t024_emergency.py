@@ -1,5 +1,5 @@
-"""統合T-024: 最外殻emergency actionの契約テスト（詳細仕様書 v1.18 §4.11「最外殻emergency
-action」、契約計画 §3.L）。
+"""統合T-024: 最外殻emergency actionの契約テスト（詳細仕様書 v1.27改訂・HF-001 §4.11「最外殻
+emergency action」、契約計画 §3.L）。
 
 10家族（8トリガー+2）。分類: II=8（EMG-001..007,010、T-023固定placeholderと矛盾）、
 III=2（EMG-008,009、既存骨格でも成立する外形契約）。
@@ -7,10 +7,12 @@ III=2（EMG-008,009、既存骨格でも成立する外形契約）。
 emergency発火条件（いずれか）: (a) build_state例外 (b) raw_candidates=0 (c) dims_candidates=0
 (d) safe_decideがNoneを返した (e) 全層で例外 (f) Candidate→action変換時の例外。
 
-emergency actionの内容: 正常なobservationからpool_list[0]["index"]を読める場合は
-    item_idx=int(observation["pool_list"][0]["index"]), container_idx=0,
-    pos_rel=(0.0,0.0,0.5), orientation=0
-プールindexすら取得できない異常入力の場合に限り、T-023の固定プレースホルダー item_idx=0。
+emergency actionの内容（v1.27改訂・HF-001）: `item_idx`は常に`0`（A11の定めるプール内index
+契約に従い、visible pool先頭のaction indexは常に0）。
+    item_idx=0, container_idx=0, pos_rel=(0.0,0.0,0.5), orientation=0
+`observation["pool_list"][0]["index"]`（荷物固有index）は使わない。プールindexすら
+取得できない異常入力でも同じ`item_idx=0`（旧v1.17契約は正常系で公式indexを使っていたが、
+これは公式が要求するプール内位置と一致しないためHF-001で撤回した）。
 """
 import numpy as np
 import pytest
@@ -119,8 +121,9 @@ def _make_agent(init):
     return agent
 
 
-def _assert_is_emergency_action_with_pool_index(action, expected_item_idx):
-    assert action["item_idx"] == expected_item_idx
+def _assert_is_emergency_action(action):
+    """emergency actionの固定契約を検証する（HF-001, v1.27：item_idxは常に0）。"""
+    assert action["item_idx"] == 0
     assert action["container_idx"] == 0
     assert action["orientation"] == 0
     np.testing.assert_allclose(np.asarray(action["place_pos"], dtype=np.float64), [0.0, 0.0, 0.5])
@@ -131,14 +134,23 @@ def _patch_dual(monkeypatch, source_module, agent_module_name, attr, fn):
 
     対象シンボルがまだ存在しない場合（未実装の新規関数・メソッド）でも
     collection error にならないよう、両方とも raising=False で行う。
+
+    `agent_module_name` を最初に import しておくこと（pre-existingバグの回避）：
+    `agents.heuristic.agent` がまだ `sys.modules` に無い状態で `source_module` を先に
+    patchすると、直後の遅延import時に `agent.py` の `from src.packing_core.state import
+    build_state` がその場で評価され、既にpatch済みの値をそのまま束縛してしまう。この場合
+    monkeypatchが記録する「元の値」自体が既にpatch後の値になり、テスト終了時の復元が
+    本来の関数へ戻らない（同一プロセス内の後続テストへ漏れる）。import を先に済ませておけば
+    `agent_module` は本来の関数を束縛した状態でpatch対象になり、復元も正しく機能する。
     """
-    monkeypatch.setattr(source_module, attr, fn, raising=False)
     try:
         import importlib
         agent_module = importlib.import_module(agent_module_name)
-        monkeypatch.setattr(agent_module, attr, fn, raising=False)
     except ImportError:
-        pass
+        agent_module = None
+    monkeypatch.setattr(source_module, attr, fn, raising=False)
+    if agent_module is not None:
+        monkeypatch.setattr(agent_module, attr, fn, raising=False)
 
 
 # --- EMG-001: build_state例外 -----------------------------------------------------------------
@@ -156,7 +168,7 @@ def test_emg_001_build_state_exception_triggers_emergency(monkeypatch):
     agent = _make_agent(init)
     result = agent.policy(observation)
 
-    _assert_is_emergency_action_with_pool_index(result, expected_item_idx=11)
+    _assert_is_emergency_action(result)
 
 
 # --- EMG-002: raw_candidates=0 -----------------------------------------------------------------
@@ -167,7 +179,7 @@ def test_emg_002_zero_raw_candidates_triggers_emergency():
     agent = _make_agent(init)
     result = agent.policy(observation)
 
-    _assert_is_emergency_action_with_pool_index(result, expected_item_idx=13)
+    _assert_is_emergency_action(result)
 
 
 # --- EMG-003: dims_candidates=0 -----------------------------------------------------------------
@@ -189,7 +201,7 @@ def test_emg_003_zero_dims_candidates_triggers_emergency(monkeypatch):
     agent = _make_agent(init)
     result = agent.policy(observation)
 
-    _assert_is_emergency_action_with_pool_index(result, expected_item_idx=17)
+    _assert_is_emergency_action(result)
 
 
 # --- EMG-004: safe_decideがNoneを返した -----------------------------------------------------------
@@ -212,7 +224,7 @@ def test_emg_004_safe_decide_returns_none_triggers_emergency(monkeypatch):
     agent = _make_agent(init)
     result = agent.policy(observation)
 
-    _assert_is_emergency_action_with_pool_index(result, expected_item_idx=19)
+    _assert_is_emergency_action(result)
 
 
 # --- EMG-005: 全層で例外 -----------------------------------------------------------------------
@@ -233,7 +245,7 @@ def test_emg_005_all_layers_raise_triggers_emergency(monkeypatch):
     agent = _make_agent(init)
     result = agent.policy(observation)
 
-    _assert_is_emergency_action_with_pool_index(result, expected_item_idx=23)
+    _assert_is_emergency_action(result)
 
 
 # --- EMG-006: Candidate→action変換時の例外（one-shot: 1回目のみ失敗） -----------------------------
@@ -261,21 +273,23 @@ def test_emg_006_make_action_conversion_exception_triggers_emergency_then_succee
 
     result = agent.policy(observation)  # 1回目のmake_action呼出しで例外→emergencyへ
 
-    _assert_is_emergency_action_with_pool_index(result, expected_item_idx=29)
+    _assert_is_emergency_action(result)
     assert call_count["n"] >= 2  # 1回目失敗・2回目（emergency構築）で成功
 
 
-# --- EMG-007: pool可読時のemergency action内容（公式indexフィールドを読む） -----------------------
+# --- EMG-007: pool可読時でも公式indexフィールドは使わない（HF-001, v1.27で反転） -----------------
 
 
-def test_emg_007_emergency_action_reads_official_pool_index_field():
-    """pool_list[0]["index"]が非ゼロ・非連番の値でも、その公式indexフィールドをそのまま
-    使う（python位置0やT-023固定0を使わない）。"""
+def test_emg_007_emergency_action_ignores_official_pool_index_field():
+    """v1.27改訂（HF-001）：pool_list[0]["index"]が非ゼロ・非連番（荷物固有index）でも、
+    emergency actionのitem_idxはA11のプール内index契約に従い常に0（旧v1.17契約は公式
+    indexフィールドをそのまま使っていたが、これは公式が要求するプール内位置と一致しない
+    ため撤回した）。"""
     init, observation = _oversized_item_fixture(pool_index=999)  # raw_candidates=0で発火
     agent = _make_agent(init)
     result = agent.policy(observation)
 
-    _assert_is_emergency_action_with_pool_index(result, expected_item_idx=999)
+    _assert_is_emergency_action(result)
 
 
 # --- EMG-010: pool index不可読時のみT-023固定item_idx=0 ------------------------------------------
@@ -286,7 +300,7 @@ def test_emg_010_unreadable_pool_index_falls_back_to_fixed_zero():
     agent = _make_agent(init)
     result = agent.policy(observation)
 
-    _assert_is_emergency_action_with_pool_index(result, expected_item_idx=0)
+    _assert_is_emergency_action(result)
 
 
 # --- EMG-008: 各トリガーでpolicy例外がプロセス外へ漏れない（III） --------------------------------

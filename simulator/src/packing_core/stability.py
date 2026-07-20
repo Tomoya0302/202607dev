@@ -28,8 +28,53 @@ if TYPE_CHECKING:
     from src.packing_core.state import PackingState
 
 
+def expected_settled_pos_rel(state: "PackingState", cand: Candidate) -> np.ndarray:
+    """候補の想定沈降後中心（コンテナ相対）を返す（詳細仕様書 §4.6、HF-001でv1.27新設）。
+
+    `Candidate.pos_rel` はHF-001（§4.12）以降「公式へ実際に出力する沈降前のaction目標位置」
+    であり、EMS支持面から`z_generation_clearance`だけ浮いている。安定性プロキシ・
+    `heuristic_score`のZ関連項は、この浮いたaction位置ではなく、荷物が実際に沈降した後の
+    想定位置（EMS支持面へ底面一致する位置）を参照する必要があるため、本関数がその変換を担う。
+
+    X/Yはaction位置と想定沈降後位置で同一のため変更しない。Zのみ、`cand.ems_id`が指す
+    EMSの支持面（`ems.min_rel[2]`）から `ems.min_rel[2] + cand.osize[2]/2.0` として
+    再計算する。
+
+    Args:
+        state: 現在の `PackingState`。
+        cand: 対象の配置候補（変更しない。戻り値は新規配列のコピー）。
+
+    Returns:
+        想定沈降後中心。shape (3,), float64。`cand.pos_rel`・`cand`自体は変更しない。
+
+    Raises:
+        ValueError: `cand.container_idx` が `0 <= idx < len(state.containers)` の
+            範囲外の場合。`cand.ems_id` が `0 <= ems_id < len(state.ems[container_idx])`
+            の範囲外の場合。
+    """
+    cidx = cand.container_idx
+    if cidx < 0 or cidx >= len(state.containers):
+        raise ValueError(
+            f"container_idx が範囲外です: {cidx}（コンテナ数={len(state.containers)}）"
+        )
+    ems_list = state.ems[cidx]
+    if cand.ems_id < 0 or cand.ems_id >= len(ems_list):
+        raise ValueError(
+            f"ems_id が範囲外です: {cand.ems_id}（container_idx={cidx}のEMS数={len(ems_list)}）"
+        )
+    ems = ems_list[cand.ems_id]
+
+    result = np.array(cand.pos_rel, dtype=np.float64, copy=True)
+    result[2] = float(ems.min_rel[2]) + float(cand.osize[2]) / 2.0
+    return result
+
+
 def _footprint(state: "PackingState", cand: Candidate) -> tuple:
     """候補底面のXY footprintと `space.height` の対象領域を求める（3関数共通の私有ヘルパ）。
+
+    HF-001（v1.27）：底面AABBのZ成分・`bottom_z`は`cand.pos_rel`ではなく
+    `expected_settled_pos_rel(state, cand)`（想定沈降後位置）から計算する。X/Yは
+    `cand.pos_rel`/`cand.osize`から計算する（action位置と沈降後位置でX/Yは同一のため）。
 
     Args:
         state: 現在の `PackingState`。
@@ -39,23 +84,19 @@ def _footprint(state: "PackingState", cand: Candidate) -> tuple:
         `(space, x_slice, y_slice, sub, bottom_z)` のタプル。`space` は
         `cand.container_idx` が指す `ContainerSpace`、`x_slice`/`y_slice` は
         `cells_of_aabb` が返す格子スライス、`sub` はその領域の `space.height`
-        （float64、空範囲なら size 0）、`bottom_z` は候補底面のz座標。
+        （float64、空範囲なら size 0）、`bottom_z` は候補底面（想定沈降後位置）のz座標。
 
     Raises:
-        ValueError: `cand.container_idx` が `0 <= idx < len(state.containers)` の
-            範囲外の場合。`cand.osize` の要素が非正の場合（`aabb_from_center` 由来）。
+        ValueError: `cand.container_idx`/`cand.ems_id` が範囲外の場合
+            （`expected_settled_pos_rel` 由来）。`cand.osize` の要素が非正の場合
+            （`aabb_from_center` 由来）。
     """
-    cidx = cand.container_idx
-    if cidx < 0 or cidx >= len(state.containers):
-        raise ValueError(
-            f"container_idx が範囲外です: {cidx}（コンテナ数={len(state.containers)}）"
-        )
-    space = state.containers[cidx]
+    settled_pos_rel = expected_settled_pos_rel(state, cand)
+    space = state.containers[cand.container_idx]
 
-    pos_rel = np.asarray(cand.pos_rel, dtype=np.float64)
     osize = np.asarray(cand.osize, dtype=np.float64)
-    amin, amax = aabb_from_center(pos_rel, osize)
-    bottom_z = float(pos_rel[2] - osize[2] / 2.0)
+    amin, amax = aabb_from_center(settled_pos_rel, osize)
+    bottom_z = float(settled_pos_rel[2] - osize[2] / 2.0)
 
     x_slice, y_slice = cells_of_aabb(space, amin, amax)
     sub = space.height[x_slice, y_slice]

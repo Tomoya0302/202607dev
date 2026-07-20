@@ -72,9 +72,11 @@ def candidate_from_ems(
     ems: EMSBox,
     pp: PlacementParams,
 ) -> Candidate | None:
-    """1つの (item, container, orientation, EMS) 組合せから候補を生成する（§4.12）。
+    """1つの (item, container, orientation, EMS) 組合せから候補を生成する（§4.12、HF-001でv1.27改訂）。
 
-    DBLF最小角（X=若い側／Y=奥(+Y)／Z=EMS支持面へ底面一致）で `pos_rel` を固定する。
+    DBLF最小角（X=若い側／Y=奥(+Y)／Z=EMS支持面から`z_generation_clearance`だけ浮いた
+    action位置）で `pos_rel` を固定する。想定沈降後位置（EMS支持面へ底面一致する位置）は
+    `pos_rel` とは別に `stability.expected_settled_pos_rel` が導出する（§4.6）。
     `prefilter_dims` 等のmask判定はここでは呼ばない。別EMSへの再割当は行わない（案A）。
     入力の `ItemSpec`/`EMSBox`/配列は変更しない。
 
@@ -94,19 +96,22 @@ def candidate_from_ems(
 
     xy_required_clearance = max(-pp.inclusion_margin + pp.internal_extra, pp.internal_extra)
     xy_generation_clearance = xy_required_clearance + pp.candidate_generation_slack
+    z_required_clearance = max(-pp.inclusion_margin + pp.internal_extra, pp.internal_extra)
+    z_generation_clearance = z_required_clearance + pp.candidate_generation_slack
 
     if not (
         float(ems_size[0]) >= float(osize[0]) + xy_generation_clearance
         and float(ems_size[1]) >= float(osize[1]) + xy_generation_clearance
-        and float(ems_size[2]) >= float(osize[2])
+        and float(ems_size[2]) >= float(osize[2]) + z_generation_clearance
     ):
         return None
 
+    settled_z = float(ems.min_rel[2]) + float(osize[2]) / 2.0
     pos_rel = np.array(
         [
             float(ems.min_rel[0]) + float(osize[0]) / 2.0 + xy_generation_clearance,
             float(ems.max_rel[1]) - float(osize[1]) / 2.0 - xy_generation_clearance,
-            float(ems.min_rel[2]) + float(osize[2]) / 2.0,
+            settled_z + z_generation_clearance,
         ],
         dtype=np.float64,
     )

@@ -58,7 +58,12 @@ def _new_local_telemetry() -> dict:
 
 
 def _make_warmup_inputs() -> tuple[dict, dict]:
-    """T-027の自己完結小型dummy init/observationを返す。"""
+    """T-027の自己完結小型dummy init/observationを返す（HF-001でv1.27改訂：空コンテナ初手）。
+
+    旧v1.23契約は配置済み荷物1件を含むdummyだったため、空コンテナ初手固有の不具合
+    （HF-001：床置き候補がINCLUSION不合格になる問題）をウォームアップ自体では検出
+    できなかった。本改訂で`packed_items=[]`の空コンテナ初手dummyへ変更する。
+    """
     inner_min = np.asarray((-0.40, -0.40, 0.02), dtype=np.float64)
     inner_max = np.asarray((0.40, 0.40, 1.02), dtype=np.float64)
     mid = (inner_min + inner_max) / 2.0
@@ -106,21 +111,8 @@ def _make_warmup_inputs() -> tuple[dict, dict]:
         "restitution": 0.0,
         "angularDamping": 0.8,
     }
-    placed_item = dict(item)
-    placed_item.update(
-        {
-            "index": 99,
-            "length": 0.20,
-            "width": 0.20,
-            "height": 0.20,
-            "mass": 2.0,
-            "belongs_to": 0,
-            "pos": (0.0, 0.0, 0.12),
-            "orn": (0.0, 0.0, 0.0, 1.0),
-        }
-    )
     observation_container = dict(container)
-    observation_container["packed_items"] = [placed_item]
+    observation_container["packed_items"] = []
     init = {"optimize": False, "lookahead_k": 1, "container_list": [container]}
     observation = {
         "optimize": False,
@@ -133,29 +125,23 @@ def _make_warmup_inputs() -> tuple[dict, dict]:
 
 
 def _emergency_action(observation: dict) -> dict:
-    """最外殻emergency actionを返す（§4.11「最外殻emergency action」）。
+    """最外殻emergency actionを返す（§4.11「最外殻emergency action」、HF-001でv1.27改訂）。
 
-    正常な `observation` から現在プール先頭の公式indexを読める場合はそれを使い、
-    プールindexすら取得できない異常入力の場合に限りT-023の固定プレースホルダー
+    `item_idx` は常に `0` とする。A11が定めるプール内index契約（現在のvisible pool先頭の
+    action indexは常に0）に従い、`observation["pool_list"][0]["index"]`（荷物固有index）は
+    使わない（旧v1.17契約はこの荷物固有indexをそのまま使っていたが、公式が要求するプール内
+    位置と一致しないためHF-001で撤回した）。プールindexすら取得できない異常入力でも同じ
     `item_idx=0` を使う。
 
     Args:
         observation: `policy()` へ渡された観測（読み取りのみ、変更しない）。
 
     Returns:
-        `item_idx=<pool先頭index or 0>, container_idx=0, pos_rel=(0.0,0.0,0.5),
-        orientation=0` の action 辞書（`make_action()` 経由）。
+        `item_idx=0, container_idx=0, pos_rel=(0.0,0.0,0.5), orientation=0` の
+        action 辞書（`make_action()` 経由）。
     """
-    item_idx = 0
-    try:
-        pool_list = observation["pool_list"]
-        if len(pool_list) > 0:
-            item_idx = int(pool_list[0]["index"])
-    except Exception:
-        item_idx = 0
-
     pos_rel = np.asarray((0.0, 0.0, 0.5), dtype=np.float64)
-    return make_action(item_idx=item_idx, container_idx=0, pos_rel=pos_rel, orientation=0)
+    return make_action(item_idx=0, container_idx=0, pos_rel=pos_rel, orientation=0)
 
 
 class Agent:

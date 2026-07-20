@@ -28,7 +28,7 @@ import pytest
 from src.packing_core import constants
 from src.packing_core.container_space import ContainerSpace, bake_placed, build_container_space
 from src.packing_core.state import PackingState
-from src.packing_core.types import Candidate, ItemSpec, PlacedItem
+from src.packing_core.types import Candidate, EMSBox, ItemSpec, PlacedItem
 
 INNER_MIN_REL = np.array([-0.40, -0.40, 0.02], dtype=np.float64)
 INNER_MAX_REL = np.array([0.40, 0.40, 1.02], dtype=np.float64)
@@ -79,11 +79,29 @@ def _item(idx=0, size=(0.1, 0.1, 0.1), weight=5.0, is_soft=False, is_priority=Fa
     )
 
 
-def _cand(item_idx=0, pos_rel=(0.0, 0.0, 0.5), osize=(0.1, 0.1, 0.1), container_idx=0):
+def _cand(item_idx=0, pos_rel=(0.0, 0.0, 0.5), osize=(0.1, 0.1, 0.1), container_idx=0, ems_id=0):
     return Candidate(
-        item_idx=item_idx, container_idx=container_idx, ems_id=0, orientation=0,
+        item_idx=item_idx, container_idx=container_idx, ems_id=ems_id, orientation=0,
         pos_rel=np.array(pos_rel, dtype=np.float64), osize=np.array(osize, dtype=np.float64),
     )
+
+
+def _register_ems(state, cand):
+    """`cand.container_idx`/`ems_id`スロットへ、想定沈降後Z（`stability.
+    expected_settled_pos_rel`が読む`ems.min_rel[2]+osize[2]/2`）が`cand.pos_rel[2]`と
+    一致するようなEMSBoxを登録する（HF-001でheuristic_scoreがEMS参照必須になったため、
+    本ファイルの既存の期待値（z_top_norm等はcand.pos_rel[2]から直接計算）を変えずに
+    テストを通すためのfixtureヘルパ。X/Yは`expected_settled_pos_rel`が使わないため
+    広めの適当な値でよい）。"""
+    bottom_z = float(cand.pos_rel[2]) - float(cand.osize[2]) / 2.0
+    ems = EMSBox(
+        min_rel=np.array([-10.0, -10.0, bottom_z], dtype=np.float64),
+        max_rel=np.array([10.0, 10.0, bottom_z + 10.0], dtype=np.float64),
+    )
+    ems_list = state.ems[cand.container_idx]
+    while len(ems_list) <= cand.ems_id:
+        ems_list.append(ems)
+    ems_list[cand.ems_id] = ems
 
 
 def _placed(xmin, xmax, ymin, ymax, zmin, zmax, is_soft=False):
@@ -119,8 +137,10 @@ def test_score_001_z_top_term_sign_and_coefficient():
     floating（support=0固定、両位置とも十分高い）で位置のみ変える。"""
     item = _item(weight=0.0)
     state = _state([item])
-    cand_a = _cand(pos_rel=(0.0, 0.0, 0.5))  # z_top_norm=(0.5+0.05-0.02)/1.0=0.53
-    cand_b = _cand(pos_rel=(0.0, 0.0, 0.7))  # z_top_norm=(0.7+0.05-0.02)/1.0=0.73
+    cand_a = _cand(pos_rel=(0.0, 0.0, 0.5), ems_id=0)  # z_top_norm=(0.5+0.05-0.02)/1.0=0.53
+    cand_b = _cand(pos_rel=(0.0, 0.0, 0.7), ems_id=1)  # z_top_norm=(0.7+0.05-0.02)/1.0=0.73
+    _register_ems(state, cand_a)
+    _register_ems(state, cand_b)
 
     score_a = _score(state, cand_a)
     score_b = _score(state, cand_b)
@@ -135,6 +155,7 @@ def test_score_002_y_center_term_sign_and_coefficient():
     state = _state([item])
     cand_a = _cand(pos_rel=(0.0, INNER_MIN_REL[1], 0.5))  # y_center_norm=0
     cand_b = _cand(pos_rel=(0.0, 0.0, 0.5))  # y_center_norm=(0-(-0.4))/0.8=0.5
+    _register_ems(state, cand_a)  # 両候補ともz=0.5で共通
 
     score_a = _score(state, cand_a)
     score_b = _score(state, cand_b)
@@ -148,6 +169,7 @@ def test_score_003_x_center_term_sign_and_coefficient():
     state = _state([item])
     cand_a = _cand(pos_rel=(INNER_MIN_REL[0], 0.0, 0.5))  # x_center_norm=0
     cand_b = _cand(pos_rel=(0.0, 0.0, 0.5))  # x_center_norm=0.5
+    _register_ems(state, cand_a)  # 両候補ともz=0.5で共通
 
     score_a = _score(state, cand_a)
     score_b = _score(state, cand_b)
@@ -163,6 +185,8 @@ def test_score_004_support_term_sign_and_coefficient():
     state_a = _state([item])  # 既配置なし → support=0
     platform = _placed(-0.4, 0.4, -0.4, 0.4, 0.02, 0.45)  # top=0.45=bottom_z → support=1
     state_b = _state([item], placed=[platform])
+    _register_ems(state_a, cand)
+    _register_ems(state_b, cand)
 
     score_a = _score(state_a, cand)
     score_b = _score(state_b, cand)
@@ -180,6 +204,8 @@ def test_score_005_cg_height_term_sign_and_coefficient():
     item_b = _item(weight=9.0)  # weight_norm=9/18=0.5
     state_a = _state([item_a])
     state_b = _state([item_b])
+    _register_ems(state_a, cand)
+    _register_ems(state_b, cand)
 
     score_a = _score(state_a, cand)
     score_b = _score(state_b, cand)
@@ -198,6 +224,8 @@ def test_score_006_hard_on_soft_term_sign_and_coefficient():
     soft_platform = _placed(-0.4, 0.4, -0.4, 0.4, 0.02, 0.45, is_soft=True)
     state_hard = _state([item], placed=[hard_platform])
     state_soft = _state([item], placed=[soft_platform])
+    _register_ems(state_hard, cand)
+    _register_ems(state_soft, cand)
 
     score_hard = _score(state_hard, cand)
     score_soft = _score(state_soft, cand)
@@ -212,6 +240,8 @@ def test_score_007_priority_ok_flag_is_fixed_zero():
     item_b = _item(weight=3.0, is_priority=True)
     state_a = _state([item_a])
     state_b = _state([item_b])
+    _register_ems(state_a, cand)
+    _register_ems(state_b, cand)
 
     score_a = _score(state_a, cand)
     score_b = _score(state_b, cand)
@@ -226,6 +256,8 @@ def test_score_008_weight_norm_clamps_at_pool_max_weight():
     item_over_cap = _item(weight=100.0)
     state_at_cap = _state([item_at_cap])
     state_over_cap = _state([item_over_cap])
+    _register_ems(state_at_cap, cand)
+    _register_ems(state_over_cap, cand)
 
     score_at_cap = _score(state_at_cap, cand)
     score_over_cap = _score(state_over_cap, cand)
@@ -238,8 +270,10 @@ def test_score_008_weight_norm_clamps_at_pool_max_weight():
 def test_score_009_flat_floor_lower_candidate_scores_higher():
     item = _item(weight=3.0)
     state = _state([item])
-    cand_low = _cand(pos_rel=(0.0, 0.0, 0.3))
-    cand_high = _cand(pos_rel=(0.0, 0.0, 0.8))
+    cand_low = _cand(pos_rel=(0.0, 0.0, 0.3), ems_id=0)
+    cand_high = _cand(pos_rel=(0.0, 0.0, 0.8), ems_id=1)
+    _register_ems(state, cand_low)
+    _register_ems(state, cand_high)
 
     score_low = _score(state, cand_low)
     score_high = _score(state, cand_high)
@@ -253,6 +287,7 @@ def test_score_010_return_type_is_builtin_float():
     item = _item(weight=3.0)
     state = _state([item])
     cand = _cand(pos_rel=(0.0, 0.0, 0.5))
+    _register_ems(state, cand)
     result = _score(state, cand)
     assert type(result) is float
 
@@ -261,6 +296,7 @@ def test_score_011_valid_input_returns_finite_value():
     item = _item(weight=3.0)
     state = _state([item])
     cand = _cand(pos_rel=(0.0, 0.0, 0.5))
+    _register_ems(state, cand)
     result = _score(state, cand)
     assert math.isfinite(result)
 
@@ -274,6 +310,7 @@ def test_score_012_does_not_mutate_candidate_state_or_item():
     item = _item(idx=0, weight=3.0)
     state = _state([item])
     cand = _cand(pos_rel=(0.0, 0.0, 0.5))
+    _register_ems(state, cand)
 
     pos_before = cand.pos_rel.copy()
     osize_before = cand.osize.copy()
@@ -302,6 +339,7 @@ def test_score_013_does_not_call_cg_margin(monkeypatch):
     item = _item(weight=3.0)
     state = _state([item])
     cand = _cand(pos_rel=(0.0, 0.0, 0.5))
+    _register_ems(state, cand)
     _score(state, cand)
 
     assert calls == []
@@ -317,6 +355,7 @@ def test_score_014_full_formula_exact_match_all_terms_nonzero():
     # 全面soft platformで覆う → support=1.0・soft_below_ratio=1.0・hard_on_soft_flag=1.0。
     soft_platform = _placed(-0.4, 0.4, -0.4, 0.4, 0.02, 0.45, is_soft=True)
     state = _state([item], placed=[soft_platform])
+    _register_ems(state, cand)
 
     z_top_norm = (0.5 + 0.05 - 0.02) / 1.0       # 0.53
     z_center_norm = (0.5 - 0.02) / 1.0            # 0.48
@@ -382,6 +421,7 @@ def _valid_fixture():
     item = _item(idx=0, weight=3.0)
     state = _state([item])
     cand = _cand(item_idx=0, pos_rel=(0.0, 0.0, 0.5))
+    _register_ems(state, cand)
     return state, cand
 
 
@@ -408,6 +448,7 @@ def _case_weight(value):
         item = _item(idx=0, weight=value)
         state = _state([item])
         cand = _cand(item_idx=0, pos_rel=(0.0, 0.0, 0.5))
+        _register_ems(state, cand)
         return state, cand, SP0
     return _build
 
@@ -548,6 +589,7 @@ def test_score_017_resolves_by_idx_not_pool_position():
     item = _item(idx=17, weight=3.0)
     state = _state([item])  # pool位置0だがidx=17
     cand = _cand(item_idx=17, pos_rel=(0.0, 0.0, 0.5))
+    _register_ems(state, cand)
 
     result = _score(state, cand)
     assert math.isfinite(result)
@@ -560,6 +602,8 @@ def test_score_018_score_independent_of_pool_order():
     state_order2 = _state([item_b, item_a])
 
     cand = _cand(item_idx=5, pos_rel=(0.0, 0.0, 0.5))
+    _register_ems(state_order1, cand)
+    _register_ems(state_order2, cand)
     score_order1 = _score(state_order1, cand)
     score_order2 = _score(state_order2, cand)
     assert score_order1 == pytest.approx(score_order2)

@@ -5,18 +5,20 @@
 各テスト関数の内部で行う（collection error 回避、`tests/test_masks.py`・
 `tests/test_stability.py` と同方針）。全19家族が分類 I（未実装 module）。
 
-候補位置生成式（§4.12、`candidate_from_ems`）:
+候補位置生成式（§4.12、`candidate_from_ems`、HF-001でv1.27改訂：action位置と想定沈降後位置を分離）:
     xy_required_clearance = max(-pp.inclusion_margin + pp.internal_extra, pp.internal_extra)
     xy_generation_clearance = xy_required_clearance + pp.candidate_generation_slack
+    z_required_clearance = max(-pp.inclusion_margin + pp.internal_extra, pp.internal_extra)
+    z_generation_clearance = z_required_clearance + pp.candidate_generation_slack
 
     pos_rel[0] = ems.min_rel[0] + osize[0]/2 + xy_generation_clearance   # X: 若い側
     pos_rel[1] = ems.max_rel[1] - osize[1]/2 - xy_generation_clearance   # Y: 奥(+Y)
-    pos_rel[2] = ems.min_rel[2] + osize[2]/2                              # Z: 支持面
+    pos_rel[2] = ems.min_rel[2] + osize[2]/2 + z_generation_clearance    # Z: 支持面から浮かせたaction位置
 
 候補生成前の寸法確認（全て満たす場合のみCandidateを生成）:
     ems.size()[0] >= osize[0] + xy_generation_clearance
     ems.size()[1] >= osize[1] + xy_generation_clearance
-    ems.size()[2] >= osize[2]
+    ems.size()[2] >= osize[2] + z_generation_clearance
 """
 import numpy as np
 import pytest
@@ -130,7 +132,7 @@ def test_cand_004_pos_rel_anchor_formula(case):
         elif case == "y_anchor":
             assert cand.pos_rel[1] == pytest.approx(ems.max_rel[1] - osize[1] / 2.0 - clr)
         else:  # z_bottom
-            assert cand.pos_rel[2] == pytest.approx(ems.min_rel[2] + osize[2] / 2.0)
+            assert cand.pos_rel[2] == pytest.approx(ems.min_rel[2] + osize[2] / 2.0 + clr)
 
     elif case == "xyclr_derived":
         # inclusion_margin/internal_extra/slack を既定から変え、式が定数から導出されている
@@ -224,14 +226,18 @@ def test_cand_006_xy_clearance_only_on_anchor_faces():
     assert box_min_y - ems.min_rel[1] > 1.0
 
 
-# --- CAND-007: Z支持面側はslack非加算（candidate_generation_slackを変えてもZ不変） --------
+# --- CAND-007: Z支持面側もXYと同じclearance式でslackに応じてシフトする（HF-001, v1.27） ---
 
 
-def test_cand_007_z_bottom_ignores_slack():
+def test_cand_007_z_action_position_scales_with_slack():
+    """Z方向のaction位置は想定沈降後位置(`ems.min_rel[2]+osize[2]/2`)から
+    `z_generation_clearance`だけ浮く。`candidate_generation_slack`を変えるとXYと同じ量だけ
+    Zもシフトする（HF-001でのZクリアランス追加、旧v1.16の「Zはslack非加算」契約を撤回）。"""
     from src.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     ems = _ems([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
+    settled_z = float(ems.min_rel[2]) + item.size[2] / 2.0
 
     pp_a = PP0
     pp_b = constants.PlacementParams(
@@ -243,8 +249,11 @@ def test_cand_007_z_bottom_ignores_slack():
     cand_a = candidate_from_ems(item, container_idx=0, orientation=0, ems_id=0, ems=ems, pp=pp_a)
     cand_b = candidate_from_ems(item, container_idx=0, orientation=0, ems_id=0, ems=ems, pp=pp_b)
     assert cand_a is not None and cand_b is not None
-    assert cand_a.pos_rel[2] == pytest.approx(cand_b.pos_rel[2])
-    assert cand_a.pos_rel[2] == pytest.approx(ems.min_rel[2] + cand_a.osize[2] / 2.0)
+    # Zは想定沈降後位置(settled_z)からxy/z共通のclearance式ぶんだけ浮く。
+    assert cand_a.pos_rel[2] == pytest.approx(settled_z + _xy_gen_clearance(pp_a))
+    assert cand_b.pos_rel[2] == pytest.approx(settled_z + _xy_gen_clearance(pp_b))
+    # slackを1e-3増やした分、ZもXYと同量だけシフトする（非加算ではなくなった）。
+    assert cand_b.pos_rel[2] - cand_a.pos_rel[2] == pytest.approx(1e-3)
 
 
 # --- CAND-008/009/010: 寸法不足（X/Y/Z）でNone -------------------------------------------

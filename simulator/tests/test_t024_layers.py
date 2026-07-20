@@ -3,7 +3,7 @@
 
 `watchdog.py` は T-022（`StepBudget`）のみ実装済みで4層は未実装のため、対象関数の import は
 各テスト関数内で行う。`CandidatePools`/`candidate_key`（`candidates.py`、未実装）も同様に
-関数内で import する。全27家族が分類 I。
+関数内で import する。全29家族が分類 I（HF-001でLAYER-021/022を改訂、LAYER-028/029を追加）。
 
 シグネチャ（§4.11）:
     def layer1_main(state, budget, *, pools, pp, stage_params) -> Candidate | None
@@ -418,7 +418,9 @@ def test_layer_020_never_calls_check_l_path(monkeypatch):
     assert calls == []
 
 
-def test_layer_021_three_group_priority_true_then_unknown_then_false():
+def test_layer_021_two_group_priority_true_then_unknown_never_false():
+    """v1.27改訂（HF-001）：l_path_cacheがFalse（既知不合格）の候補は返さない。
+    True群→未評価群の順で優先し、False群は選択対象から完全に除外する。"""
     from src.packing_core.watchdog import layer3_first_fit
 
     c_false = _cand(item_idx=0)
@@ -434,22 +436,35 @@ def test_layer_021_three_group_priority_true_then_unknown_then_false():
 
     assert result is c_true  # True群が最優先
 
+    # True群が無ければ未評価群を返す（False群のみが残っていても未評価が優先）。
+    pools_no_true = _pools(
+        geo=[c_false, c_unknown], l_path_cache={_key(c_false): False},
+    )
+    result_no_true = layer3_first_fit(
+        _minimal_state(), _never_over_budget(), pools=pools_no_true, pp=PP0, stage_params=sp
+    )
+    assert result_no_true is c_unknown
 
-def test_layer_022_empty_geo_returns_none_and_l_path_pass_not_required():
+
+def test_layer_022_empty_geo_and_only_false_cached_both_return_none():
+    """v1.27改訂（HF-001）：`geo_candidates`が空、またはFalse群しか残っていない場合は
+    `None`を返す（既知のL_PATH不合格候補を最終手段としても返さない）。"""
     from src.packing_core.watchdog import layer3_first_fit
 
     sp = constants.StageParams(l_path_top_m=10)
 
     assert layer3_first_fit(_minimal_state(), _never_over_budget(), pools=_pools(geo=[]), pp=PP0, stage_params=sp) is None
 
-    # True群が無くてもunknown/False群から返せる（L_PATH合格必須ではない）。
+    # True群・unknown群がいずれも無く、False群しか残っていなければNoneを返す
+    # （旧v1.17契約はここでFalse候補を返していたが、HF-001でこれを禁止した）。
     c_false = _cand(item_idx=0)
     pools = _pools(geo=[c_false], l_path_cache={_key(c_false): False})
     result = layer3_first_fit(_minimal_state(), _never_over_budget(), pools=pools, pp=PP0, stage_params=sp)
-    assert result is c_false
+    assert result is None
 
 
-# --- LAYER-023..027: layer4_max_p（v1.18改訂、有効性 = isfinite かつ 0<=p_success<=1） ----------
+# --- LAYER-023..029: layer4_max_p（v1.27改訂・HF-001、有効性 = isfinite かつ 0<=p_success<=1
+#     かつ l_path_cacheがFalseでない。入力集合はdims_candidatesではなくgeo_candidates） --------
 
 
 def test_layer_023_returns_max_p_success_among_valid():
@@ -457,7 +472,7 @@ def test_layer_023_returns_max_p_success_among_valid():
 
     c_low = _cand(item_idx=0, p_success=0.3)
     c_high = _cand(item_idx=1, p_success=0.7)
-    pools = _pools(dims=[c_low, c_high])
+    pools = _pools(geo=[c_low, c_high])
     sp = constants.StageParams(l_path_top_m=10)
 
     result = layer4_max_p(_minimal_state(), _never_over_budget(), pools=pools, pp=PP0, stage_params=sp)
@@ -477,7 +492,7 @@ def test_layer_024_excludes_non_finite_p_success(bad_value):
 
     c_valid = _cand(item_idx=0, p_success=0.4)
     c_invalid = _cand(item_idx=1, p_success=bad_value)
-    pools = _pools(dims=[c_valid, c_invalid])
+    pools = _pools(geo=[c_valid, c_invalid])
     sp = constants.StageParams(l_path_top_m=10)
 
     result = layer4_max_p(_minimal_state(), _never_over_budget(), pools=pools, pp=PP0, stage_params=sp)
@@ -496,7 +511,7 @@ def test_layer_025_excludes_out_of_range_finite_p_success(bad_value):
 
     c_valid = _cand(item_idx=0, p_success=0.4)
     c_invalid = _cand(item_idx=1, p_success=bad_value)
-    pools = _pools(dims=[c_valid, c_invalid])
+    pools = _pools(geo=[c_valid, c_invalid])
     sp = constants.StageParams(l_path_top_m=10)
 
     result = layer4_max_p(_minimal_state(), _never_over_budget(), pools=pools, pp=PP0, stage_params=sp)
@@ -509,7 +524,7 @@ def test_layer_026_all_invalid_returns_none():
     c_nan = _cand(item_idx=0, p_success=float("nan"))
     c_neg = _cand(item_idx=1, p_success=-0.5)
     c_over = _cand(item_idx=2, p_success=1.5)
-    pools = _pools(dims=[c_nan, c_neg, c_over])
+    pools = _pools(geo=[c_nan, c_neg, c_over])
     sp = constants.StageParams(l_path_top_m=10)
 
     result = layer4_max_p(_minimal_state(), _never_over_budget(), pools=pools, pp=PP0, stage_params=sp)
@@ -525,8 +540,50 @@ def test_layer_027_selects_from_valid_subset_only_when_some_invalid():
     c_valid_high = _cand(item_idx=1, p_success=0.7)
     c_invalid_over = _cand(item_idx=2, p_success=1.5)
     c_invalid_nan = _cand(item_idx=3, p_success=float("nan"))
-    pools = _pools(dims=[c_valid_low, c_invalid_over, c_valid_high, c_invalid_nan])
+    pools = _pools(geo=[c_valid_low, c_invalid_over, c_valid_high, c_invalid_nan])
     sp = constants.StageParams(l_path_top_m=10)
 
     result = layer4_max_p(_minimal_state(), _never_over_budget(), pools=pools, pp=PP0, stage_params=sp)
     assert result is c_valid_high
+
+
+def test_layer_028_ignores_inclusion_only_failing_candidates_in_dims_not_geo():
+    """v1.27改訂（HF-001）：DIMSのみ通過しINCLUSION/OVERLAP/CEILING不合格の候補が
+    `dims_candidates`にだけ存在し`geo_candidates`に無い場合、layer4はそれを選ばない
+    （旧v1.18の`dims_candidates`契約はこの種の候補を最終選択し得たため撤回した）。"""
+    from src.packing_core.watchdog import layer4_max_p
+
+    c_inclusion_reject = _cand(item_idx=0, p_success=0.99)  # dimsのみ、geoには入らない
+    c_geo_pass = _cand(item_idx=1, p_success=0.2)  # geo通過済み（p_successは低い）
+    pools = _pools(dims=[c_inclusion_reject, c_geo_pass], geo=[c_geo_pass])
+    sp = constants.StageParams(l_path_top_m=10)
+
+    result = layer4_max_p(_minimal_state(), _never_over_budget(), pools=pools, pp=PP0, stage_params=sp)
+    # geo_candidatesに存在しないc_inclusion_rejectは、p_successがどれほど高くても選ばれない。
+    assert result is c_geo_pass
+
+
+def test_layer_029_excludes_l_path_cache_false_candidates():
+    """v1.27改訂（HF-001）：`l_path_cache`が`False`（既知L_PATH不合格）と判明した候補は、
+    有効なp_successを持っていても選択対象から除外する。キー未登録・Trueはいずれも
+    有効候補側として扱う。"""
+    from src.packing_core.watchdog import layer4_max_p
+
+    c_cache_false = _cand(item_idx=0, p_success=0.9)  # 最高p_successだがL_PATH既知不合格
+    c_cache_true = _cand(item_idx=1, p_success=0.5)
+    c_cache_unknown = _cand(item_idx=2, p_success=0.6)
+    pools = _pools(
+        geo=[c_cache_false, c_cache_true, c_cache_unknown],
+        l_path_cache={_key(c_cache_false): False, _key(c_cache_true): True},
+    )
+    sp = constants.StageParams(l_path_top_m=10)
+
+    result = layer4_max_p(_minimal_state(), _never_over_budget(), pools=pools, pp=PP0, stage_params=sp)
+    assert result is c_cache_unknown  # false除外後、有効候補中最大p_successはunknown(0.6)
+
+    # 有効候補がl_path_cache=Falseの1件だけならNoneを返す。
+    pools_only_false = _pools(geo=[c_cache_false], l_path_cache={_key(c_cache_false): False})
+    result_only_false = layer4_max_p(
+        _minimal_state(), _never_over_budget(), pools=pools_only_false, pp=PP0, stage_params=sp
+    )
+    assert result_only_false is None

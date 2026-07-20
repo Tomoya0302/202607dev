@@ -189,11 +189,14 @@ def layer3_first_fit(
     state: "PackingState", budget: StepBudget, *,
     pools: "CandidatePools", pp: "PlacementParams", stage_params: "StageParams",
 ) -> Candidate | None:
-    """新しい `check_l_path` 評価を行わず、既知のL_PATH状態で縮退選択する層（§4.11）。
+    """新しい `check_l_path` 評価を行わず、既知のL_PATH状態で縮退選択する層
+    （§4.11、HF-001でv1.27改訂）。
 
-    `pools.geo_candidates` を (1) `l_path_cache` が `True` (2) 未評価 (3) `l_path_cache` が
-    `False` の3群へ安定分類し、各群内は基本順序を維持したまま、群優先順位(1)→(2)→(3)で
-    先頭のCandidateを返す。
+    `pools.geo_candidates` を (1) `l_path_cache` が `True` (2) 未評価 の2群へ安定分類し、
+    各群内は基本順序を維持したまま、群優先順位(1)→(2)で先頭のCandidateを返す。
+    `l_path_cache` が `False`（既知のL_PATH不合格）と判明した候補は選択対象から完全に
+    除外する（旧v1.17の3群「(1)True→(2)未評価→(3)False」契約は撤回。既知不合格を最後の
+    手段として返すと公式validatorで確実にNGとなる縮退を選んでしまうため禁止する）。
 
     Args:
         state: 現在の `PackingState`（本層では未使用、シグネチャ統一のため受け取る）。
@@ -203,22 +206,21 @@ def layer3_first_fit(
         stage_params: 本層では未使用。
 
     Returns:
-        群優先順位(1)→(2)→(3)の先頭Candidate。`geo_candidates` が空、または層内例外なら `None`。
+        群優先順位(1)→(2)の先頭Candidate。両群とも空、`geo_candidates` が空、
+        または層内例外なら `None`。
     """
     try:
         group_true: list[Candidate] = []
         group_unknown: list[Candidate] = []
-        group_false: list[Candidate] = []
         for cand in pools.geo_candidates:
             key = _cache_key(cand)
             if key not in pools.l_path_cache:
                 group_unknown.append(cand)
             elif pools.l_path_cache[key]:
                 group_true.append(cand)
-            else:
-                group_false.append(cand)
+            # l_path_cache が False の候補はどちらの群にも含めない（選択対象から除外）。
 
-        for group in (group_true, group_unknown, group_false):
+        for group in (group_true, group_unknown):
             if group:
                 return group[0]
         return None
@@ -230,27 +232,35 @@ def layer4_max_p(
     state: "PackingState", budget: StepBudget, *,
     pools: "CandidatePools", pp: "PlacementParams", stage_params: "StageParams",
 ) -> Candidate | None:
-    """`dims_candidates` のうち有効な `p_success` が最大の候補を返す最終層（v1.18改訂、§4.11）。
+    """`geo_candidates` のうち有効な `p_success` が最大の候補を返す最終層
+    （HF-001でv1.27改訂、§4.11）。
 
-    追加のマスク・L_PATH・特徴計算は開始しない。幾何合格（DIMS以降の段階）を保証しない
-    最終Candidate層である。
+    入力は `pools.geo_candidates`（旧v1.18の `dims_candidates` 契約は、INCLUSION/OVERLAP/
+    CEILING未確認の候補を最終選択し得たため撤回した。空コンテナ初手のようにDIMSのみ通過し
+    INCLUSION不合格の候補しか無い場合に、その不合格候補を選んでしまうことがHF-001の
+    直接原因だった）。追加のマスク・L_PATH・特徴計算は開始しない。`l_path_cache` が
+    `False`（既知のL_PATH不合格）と判明した候補も選択対象から除外する。DIMS〜CEILINGの
+    4段階合格は保証するが、L_PATH合格は保証しない最終Candidate層である。
 
     Args:
         state: 現在の `PackingState`（本層では未使用、シグネチャ統一のため受け取る）。
         budget: 全層で共有する `StepBudget`（本層では未使用）。
-        pools: 候補集合（`dims_candidates` を使用）。
+        pools: 候補集合（`geo_candidates`/`l_path_cache` を使用）。
         pp: 配置判定パラメータ（本層では未使用）。
         stage_params: 本層では未使用。
 
     Returns:
-        有効候補（`math.isfinite(cand.p_success) and 0.0<=cand.p_success<=1.0`）のうち
-        `p_success` 最大（同点は基本順序）。有効候補が0件、または層内例外なら `None`。
+        有効候補（`math.isfinite(cand.p_success) and 0.0<=cand.p_success<=1.0` かつ
+        `l_path_cache` が `False` でない）のうち `p_success` 最大（同点は基本順序）。
+        有効候補が0件、または層内例外なら `None`。
     """
     try:
         best: Candidate | None = None
-        for cand in pools.dims_candidates:
+        for cand in pools.geo_candidates:
             p = cand.p_success
             if not (math.isfinite(p) and 0.0 <= p <= 1.0):
+                continue
+            if pools.l_path_cache.get(_cache_key(cand)) is False:
                 continue
             if best is None or p > best.p_success:
                 best = cand

@@ -20,6 +20,11 @@ T-021 節では `support_polygon`／`cg_margin` を検証する）。
         パッチ（各セルの生矩形を候補底面AABBおよびコンテナ内壁XYでクリップしたもの）の
         全頂点の凸包（人間確定・案B′、`docs/実装詳細仕様書.md` §4.6 v1.14追補参照）。
         平床 cg_margin=0.20（許容1e-3）・半分支持 cg_margin=0.0 の期待値はこの定義で成立する。
+    D5（HF-001, v1.27）. 本モジュールの全関数は`stability.expected_settled_pos_rel(state, cand)`
+        経由で想定沈降後Zを参照するため、`state.ems[cand.container_idx][cand.ems_id]`が
+        存在している必要がある。本ファイルの`_candidate()`は生成と同時に、
+        `settled_z == bottom_z`（既存の期待値を変えない）となるEMSBoxを`state.ems`へ
+        登録する私有ヘルパ`_register_ems(state, cand)`を通す（下記参照）。
 
 fixture: 軸整列直方体コンテナ（cut_x=cut_y=0、shelf=False）。
     inner_min_rel=[-0.40,-0.40,0.02], inner_max_rel=[0.40,0.40,1.02], cell=0.02（nx=ny=40）。
@@ -32,7 +37,7 @@ import pytest
 from src.packing_core import constants
 from src.packing_core.container_space import bake_placed, build_container_space
 from src.packing_core.state import PackingState
-from src.packing_core.types import Candidate, PlacedItem
+from src.packing_core.types import Candidate, EMSBox, PlacedItem
 
 TOL_CONTACT = constants.TOL_CONTACT
 EPS_GEOM = constants.EPS_GEOM
@@ -143,6 +148,27 @@ def _candidate(
     )
 
 
+def _register_ems(state: PackingState, cand: Candidate) -> None:
+    """`cand.container_idx`/`ems_id`スロットへ、想定沈降後Z（`stability.
+    expected_settled_pos_rel`が読む`ems.min_rel[2]+osize[2]/2`）が`cand.pos_rel[2]`
+    （＝`_candidate()`のbottom_z由来）と一致するEMSBoxを登録する（HF-001、D5参照）。
+    X/Yは`expected_settled_pos_rel`が使わないため広めの適当な値でよい。
+    `container_idx`が`state.containers`の範囲外のテスト（container_idx検証用）でも
+    `state.ems`へのキー追加自体は無害（実際の検証はそれより前のcontainer_idx範囲チェックで
+    ValueErrorになる）。"""
+    if cand.container_idx not in state.ems:
+        state.ems[cand.container_idx] = []
+    ems_list = state.ems[cand.container_idx]
+    bottom_z = float(cand.pos_rel[2]) - float(cand.osize[2]) / 2.0
+    ems = EMSBox(
+        min_rel=np.array([-10.0, -10.0, bottom_z], dtype=np.float64),
+        max_rel=np.array([10.0, 10.0, bottom_z + 10.0], dtype=np.float64),
+    )
+    while len(ems_list) <= cand.ems_id:
+        ems_list.append(ems)
+    ems_list[cand.ems_id] = ems
+
+
 # --- support_ratio ---------------------------------------------------------
 
 def test_support_ratio_flat_floor_is_one():
@@ -150,6 +176,7 @@ def test_support_ratio_flat_floor_is_one():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     assert support_ratio(state, cand) == pytest.approx(1.0)
 
 
@@ -159,6 +186,7 @@ def test_support_ratio_half_on_platform_is_half():
     platform = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30)
     state = _state_with_placed([platform])
     cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
     assert support_ratio(state, cand) == pytest.approx(0.5)
 
 
@@ -167,6 +195,7 @@ def test_support_ratio_floating_is_zero():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=0.50)
+    _register_ems(state, cand)
     assert support_ratio(state, cand) == pytest.approx(0.0)
 
 
@@ -175,6 +204,7 @@ def test_support_ratio_outside_footprint_is_zero():
 
     state = _state_with_placed([])
     cand = _candidate(x=10.0, bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     assert support_ratio(state, cand) == pytest.approx(0.0)
 
 
@@ -185,9 +215,11 @@ def test_support_ratio_tol_contact_boundary():
     state = _state_with_placed([platform])
 
     inside_tol = _candidate(bottom_z=0.30 + 0.8 * TOL_CONTACT)
+    _register_ems(state, inside_tol)
     assert support_ratio(state, inside_tol) == pytest.approx(1.0)
 
     outside_tol = _candidate(bottom_z=0.30 + 1.2 * TOL_CONTACT)
+    _register_ems(state, outside_tol)
     assert support_ratio(state, outside_tol) == pytest.approx(0.0)
 
 
@@ -196,7 +228,9 @@ def test_support_ratio_return_type_is_float_and_bounded():
 
     platform = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30)
     state = _state_with_placed([platform])
-    result = support_ratio(state, _candidate(bottom_z=0.30))
+    cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
+    result = support_ratio(state, cand)
     assert isinstance(result, float)
     assert np.isfinite(result)
     assert 0.0 <= result <= 1.0
@@ -209,6 +243,7 @@ def test_max_step_below_flat_is_zero():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     assert max_step_below(state, cand) == pytest.approx(0.0)
 
 
@@ -218,6 +253,7 @@ def test_max_step_below_platform_step_includes_nonsupport():
     platform = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30)
     state = _state_with_placed([platform])
     cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
     # footprint内: 左半分 height=0.30、右半分 height=floor_z=0.02（非支持だが対象に含む）
     assert max_step_below(state, cand) == pytest.approx(0.30 - FLOOR_Z)
 
@@ -227,6 +263,7 @@ def test_max_step_below_empty_footprint_is_zero():
 
     state = _state_with_placed([])
     cand = _candidate(x=10.0, bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     assert max_step_below(state, cand) == pytest.approx(0.0)
 
 
@@ -235,7 +272,9 @@ def test_max_step_below_is_nonnegative_float():
 
     platform = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30)
     state = _state_with_placed([platform])
-    result = max_step_below(state, _candidate(bottom_z=0.30))
+    cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
+    result = max_step_below(state, cand)
     assert isinstance(result, float)
     assert result >= 0.0
 
@@ -248,6 +287,7 @@ def test_soft_below_ratio_all_soft_is_one():
     soft = _placed_item(-0.4, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=True)
     state = _state_with_placed([soft])
     cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
     assert soft_below_ratio(state, cand) == pytest.approx(1.0)
 
 
@@ -258,6 +298,7 @@ def test_soft_below_ratio_half_soft_half_hard_is_half():
     hard = _placed_item(0.0, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=False)
     state = _state_with_placed([soft, hard])
     cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
     assert soft_below_ratio(state, cand) == pytest.approx(0.5)
 
 
@@ -269,6 +310,7 @@ def test_soft_below_ratio_half_floor_half_soft_is_half():
     # 右半分は床のまま（PlacedItemを置かない）。
     state = _state_with_placed([soft])
     cand = _candidate(bottom_z=soft_top_z)
+    _register_ems(state, cand)
     # 床は candidate_bottom_z との差 < TOL_CONTACT のため支持セルとなり分母に入るが、
     # ソフト最上面ではないため分子には入らない。
     assert soft_below_ratio(state, cand) == pytest.approx(0.5)
@@ -280,6 +322,7 @@ def test_soft_below_ratio_hard_only_is_zero():
     hard = _placed_item(-0.4, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=False)
     state = _state_with_placed([hard])
     cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
     assert soft_below_ratio(state, cand) == pytest.approx(0.0)
 
 
@@ -289,6 +332,7 @@ def test_soft_below_ratio_no_support_is_zero():
     soft = _placed_item(-0.4, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=True)
     state = _state_with_placed([soft])
     cand = _candidate(bottom_z=0.50)  # 支持セル0件
+    _register_ems(state, cand)
     assert soft_below_ratio(state, cand) == pytest.approx(0.0)
 
 
@@ -300,6 +344,7 @@ def test_soft_below_ratio_tie_soft_and_hard_counts_soft():
     hard = _placed_item(-0.4, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=False)
     state = _state_with_placed([soft, hard])
     cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
     assert soft_below_ratio(state, cand) == pytest.approx(1.0)
 
 
@@ -312,6 +357,7 @@ def test_soft_below_ratio_soft_below_top_not_counted():
     hard = _placed_item(-0.4, 0.4, -0.4, 0.4, z_bottom=0.20, z_top=0.30, is_soft=False)
     state = _state_with_placed([soft, hard])
     cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
     assert soft_below_ratio(state, cand) == pytest.approx(0.0)
 
 
@@ -321,7 +367,9 @@ def test_soft_below_ratio_return_type_is_float_and_bounded():
     soft = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=True)
     hard = _placed_item(0.0, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=False)
     state = _state_with_placed([soft, hard])
-    result = soft_below_ratio(state, _candidate(bottom_z=0.30))
+    cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
+    result = soft_below_ratio(state, cand)
     assert isinstance(result, float)
     assert np.isfinite(result)
     assert 0.0 <= result <= 1.0
@@ -334,6 +382,7 @@ def test_container_idx_negative_raises_value_error():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z, container_idx=-1)
+    _register_ems(state, cand)
     with pytest.raises(ValueError):
         support_ratio(state, cand)
 
@@ -343,6 +392,7 @@ def test_container_idx_out_of_range_raises_value_error():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z, container_idx=len(state.containers))
+    _register_ems(state, cand)
     with pytest.raises(ValueError):
         support_ratio(state, cand)
 
@@ -357,6 +407,7 @@ def test_support_polygon_flat_floor_matches_candidate_boundary():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     poly = support_polygon(state, cand)
     expected = np.array(
         [[-0.2, -0.2], [0.2, -0.2], [0.2, 0.2], [-0.2, 0.2]], dtype=np.float64
@@ -369,6 +420,7 @@ def test_support_polygon_no_support_is_empty_shape():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=0.50)  # 浮遊、支持0件
+    _register_ems(state, cand)
     poly = support_polygon(state, cand)
     assert poly.shape == (0, 2)
     assert poly.dtype == np.float64
@@ -382,6 +434,7 @@ def test_support_polygon_single_supported_cell_returns_intersection_rectangle():
     state = _state_with_placed([platform])
     # 候補footprintをそのセルと厳密に一致させる（osize=cellと同寸、中心をセル中心に一致）。
     cand = _candidate(x=-0.39, y=-0.39, bottom_z=0.05, osize=(CELL, CELL, 0.1))
+    _register_ems(state, cand)
     poly = support_polygon(state, cand)
     expected = np.array(
         [[-0.4, -0.4], [-0.38, -0.4], [-0.38, -0.38], [-0.4, -0.38]], dtype=np.float64
@@ -395,6 +448,7 @@ def test_support_polygon_clips_to_candidate_footprint_when_off_grid():
     # 候補中心を格子に対して非整列（x=0.011）にしても、支持パッチは候補底面AABBの外へ出ない。
     state = _state_with_placed([])
     cand = _candidate(x=0.011, y=0.0, bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     poly = support_polygon(state, cand)
     amin = cand.pos_rel[:2] - cand.osize[:2] / 2.0
     amax = cand.pos_rel[:2] + cand.osize[:2] / 2.0
@@ -412,6 +466,7 @@ def test_support_polygon_clips_to_container_inner_wall():
     # support_polygon 自身が内壁XYでクリップする契約を単体で検証する。
     state = _state_with_placed([])
     cand = _candidate(x=0.39, y=0.0, bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     poly = support_polygon(state, cand)
     assert np.all(poly[:, 0] <= INNER_MAX_REL[0] + EPS_GEOM)
     assert np.all(poly[:, 0] >= INNER_MIN_REL[0] - EPS_GEOM)
@@ -424,6 +479,7 @@ def test_support_polygon_is_counterclockwise():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     poly = support_polygon(state, cand)
     # shoelace公式による符号付き面積。正なら反時計回り。
     x, y = poly[:, 0], poly[:, 1]
@@ -436,6 +492,7 @@ def test_support_polygon_lexicographically_smallest_vertex_first():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     poly = support_polygon(state, cand)
     first = tuple(poly[0])
     for row in poly[1:]:
@@ -447,6 +504,7 @@ def test_support_polygon_first_vertex_not_duplicated_at_end():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     poly = support_polygon(state, cand)
     assert not np.array_equal(poly[0], poly[-1])
 
@@ -456,7 +514,9 @@ def test_support_polygon_dtype_and_shape_contract():
 
     state = _state_with_placed([])
     for bottom_z in (FLOOR_Z, 0.50):  # 支持あり／支持0件の両方
-        poly = support_polygon(state, _candidate(bottom_z=bottom_z))
+        cand = _candidate(bottom_z=bottom_z)
+        _register_ems(state, cand)
+        poly = support_polygon(state, cand)
         assert poly.dtype == np.float64
         assert poly.ndim == 2
         assert poly.shape[1] == 2
@@ -468,9 +528,13 @@ def test_support_polygon_independent_of_placed_list_order():
     plat_a = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=FLOOR_Z, z_top=0.10)
     plat_b = _placed_item(0.0, 0.4, -0.4, 0.4, z_bottom=FLOOR_Z, z_top=0.30)
     cand = _candidate(bottom_z=0.30)
+    state_ab = _state_with_placed([plat_a, plat_b])
+    state_ba = _state_with_placed([plat_b, plat_a])
+    _register_ems(state_ab, cand)
+    _register_ems(state_ba, cand)
 
-    poly_ab = support_polygon(_state_with_placed([plat_a, plat_b]), cand)
-    poly_ba = support_polygon(_state_with_placed([plat_b, plat_a]), cand)
+    poly_ab = support_polygon(state_ab, cand)
+    poly_ba = support_polygon(state_ba, cand)
     np.testing.assert_array_equal(poly_ab, poly_ba)
 
 
@@ -522,6 +586,7 @@ def test_cg_margin_flat_floor_is_half_min_osize():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     expected = min(cand.osize[0], cand.osize[1]) / 2.0
     assert cg_margin(state, cand) == pytest.approx(expected, abs=1e-3)
 
@@ -532,6 +597,7 @@ def test_cg_margin_half_support_is_near_zero_boundary():
     platform = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=FLOOR_Z, z_top=0.30)
     state = _state_with_placed([platform])
     cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
     assert cg_margin(state, cand) == pytest.approx(0.0, abs=1e-3)
 
 
@@ -542,6 +608,7 @@ def test_cg_margin_outside_support_hull_is_negative():
     platform = _placed_item(-0.4, -0.1, -0.4, 0.4, z_bottom=FLOOR_Z, z_top=0.30)
     state = _state_with_placed([platform])
     cand = _candidate(bottom_z=0.30)
+    _register_ems(state, cand)
     result = cg_margin(state, cand)
     assert np.isfinite(result)
     assert result < 0.0
@@ -586,5 +653,6 @@ def test_cg_margin_return_type_is_float():
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
+    _register_ems(state, cand)
     result = cg_margin(state, cand)
     assert isinstance(result, float)
