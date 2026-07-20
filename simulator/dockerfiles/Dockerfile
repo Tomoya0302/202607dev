@@ -32,3 +32,8 @@ RUN pip install gymnasium==1.2.3 pybullet==3.2.7 pillow==10.3.0
 RUN pip install torch==2.7.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 
 RUN rm -rf ~/.cache/pip
+
+# Install Git for T-031 provenance collection.
+RUN apt-get -qq update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
