@@ -140,6 +140,9 @@ def _observed_pools(captured):
 def test_budget_001_step_budget_constructed_exactly_once(monkeypatch):
     from src.packing_core import watchdog
 
+    # T-027: __init__ warmupは別契約で検証し、ここでは1回の実policyだけを観測する。
+    init, observation = _placeable_fixture()
+    agent = _make_agent(init)
     calls = {"n": 0}
     original_init = watchdog.StepBudget.__init__
 
@@ -149,8 +152,6 @@ def test_budget_001_step_budget_constructed_exactly_once(monkeypatch):
 
     monkeypatch.setattr(watchdog.StepBudget, "__init__", _counting_init)
 
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
     agent.policy(observation)
 
     assert calls["n"] == 1
@@ -159,6 +160,9 @@ def test_budget_001_step_budget_constructed_exactly_once(monkeypatch):
 def test_budget_002_all_pipeline_stages_share_the_same_budget_object(monkeypatch):
     from src.packing_core import candidates, watchdog
 
+    # T-027: spyの観測窓はAgent生成後の1回の実policyに限定する。
+    init, observation = _placeable_fixture()
+    agent = _make_agent(init)
     budgets_seen = []
 
     original_enum = candidates.enumerate_candidates
@@ -190,8 +194,6 @@ def test_budget_002_all_pipeline_stages_share_the_same_budget_object(monkeypatch
     except ImportError:
         pass
 
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
     agent.policy(observation)
 
     assert len(budgets_seen) == 3

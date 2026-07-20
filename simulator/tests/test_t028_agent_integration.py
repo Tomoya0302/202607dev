@@ -158,6 +158,10 @@ def test_ag_actionfail_make_action_exception_still_records_finite_png(tmp_path, 
     _emergency_actionへフォールバックした場合を含む」）。"""
     from src.packing_core import state as state_module
 
+    # T-027: one-shot失敗注入は__init__ warmupではなく実policy変換を対象とする。
+    _set_env(monkeypatch, tmp_path, "ag-actionfail")
+    init, observation = placeable_case()
+    agent = make_heuristic_agent(init)
     original_make_action = state_module.make_action
     call_count = {"n": 0}
 
@@ -172,9 +176,6 @@ def test_ag_actionfail_make_action_exception_still_records_finite_png(tmp_path, 
         "make_action", _one_shot_raising_make_action,
     )
 
-    _set_env(monkeypatch, tmp_path, "ag-actionfail")
-    init, observation = placeable_case()
-    agent = make_heuristic_agent(init)
     agent.policy(observation)
 
     assert call_count["n"] >= 2  # 1回目=決定候補変換失敗、2回目=emergency構築で成功

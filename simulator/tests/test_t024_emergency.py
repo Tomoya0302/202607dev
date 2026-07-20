@@ -242,6 +242,9 @@ def test_emg_005_all_layers_raise_triggers_emergency(monkeypatch):
 def test_emg_006_make_action_conversion_exception_triggers_emergency_then_succeeds(monkeypatch):
     from src.packing_core import state as state_module
 
+    # T-027: one-shot失敗注入は__init__ warmupではなく実policy変換を対象とする。
+    init, observation = _normal_fixture(pool_index=29)
+    agent = _make_agent(init)
     original_make_action = state_module.make_action
     call_count = {"n": 0}
 
@@ -256,8 +259,6 @@ def test_emg_006_make_action_conversion_exception_triggers_emergency_then_succee
         "make_action", _one_shot_raising_make_action,
     )
 
-    init, observation = _normal_fixture(pool_index=29)
-    agent = _make_agent(init)
     result = agent.policy(observation)  # 1回目のmake_action呼出しで例外→emergencyへ
 
     _assert_is_emergency_action_with_pool_index(result, expected_item_idx=29)
