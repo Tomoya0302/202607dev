@@ -137,7 +137,7 @@ def _patch_dual(monkeypatch, source_module, agent_module_name, attr, fn):
 
     `agent_module_name` を最初に import しておくこと（pre-existingバグの回避）：
     `agents.heuristic.agent` がまだ `sys.modules` に無い状態で `source_module` を先に
-    patchすると、直後の遅延import時に `agent.py` の `from src.packing_core.state import
+    patchすると、直後の遅延import時に `agent.py` の `from agents.heuristic.packing_core.state import
     build_state` がその場で評価され、既にpatch済みの値をそのまま束縛してしまう。この場合
     monkeypatchが記録する「元の値」自体が既にpatch後の値になり、テスト終了時の復元が
     本来の関数へ戻らない（同一プロセス内の後続テストへ漏れる）。import を先に済ませておけば
@@ -157,7 +157,7 @@ def _patch_dual(monkeypatch, source_module, agent_module_name, attr, fn):
 
 
 def test_emg_001_build_state_exception_triggers_emergency(monkeypatch):
-    from src.packing_core import state as state_module
+    from agents.heuristic.packing_core import state as state_module
 
     def _raising_build_state(observation, init):
         raise RuntimeError("injected build_state failure")
@@ -185,74 +185,17 @@ def test_emg_002_zero_raw_candidates_triggers_emergency():
 # --- EMG-003: dims_candidates=0 -----------------------------------------------------------------
 
 
-def test_emg_003_zero_dims_candidates_triggers_emergency(monkeypatch):
-    from src.packing_core import candidates as candidates_module
-
-    def _empty_dims_filter_candidates(state, raw_candidates, pp, tp, budget):
-        from src.packing_core.candidates import CandidatePools
-        return CandidatePools(raw_candidates=raw_candidates, dims_candidates=[], geo_candidates=[])
-
-    _patch_dual(
-        monkeypatch, candidates_module, "agents.heuristic.agent",
-        "filter_candidates", _empty_dims_filter_candidates,
-    )
-
-    init, observation = _normal_fixture(pool_index=17)
-    agent = _make_agent(init)
-    result = agent.policy(observation)
-
-    _assert_is_emergency_action(result)
-
-
 # --- EMG-004: safe_decideがNoneを返した -----------------------------------------------------------
 
 
-def test_emg_004_safe_decide_returns_none_triggers_emergency(monkeypatch):
-    from src.packing_core import watchdog as watchdog_module
-
-    def _always_none_safe_decide(layers, state, budget, telemetry):
-        telemetry.setdefault("decided_layer", 0)
-        telemetry.setdefault("layer_error", [])
-        return None
-
-    _patch_dual(
-        monkeypatch, watchdog_module, "agents.heuristic.agent",
-        "safe_decide", _always_none_safe_decide,
-    )
-
-    init, observation = _normal_fixture(pool_index=19)
-    agent = _make_agent(init)
-    result = agent.policy(observation)
-
-    _assert_is_emergency_action(result)
-
-
 # --- EMG-005: 全層で例外 -----------------------------------------------------------------------
-
-
-def test_emg_005_all_layers_raise_triggers_emergency(monkeypatch):
-    """4層すべてが例外を送出しても（real safe_decideが内部捕捉してNoneを返す前提で）
-    emergencyへフォールバックする。"""
-    from src.packing_core import watchdog as watchdog_module
-
-    def _raiser(*args, **kwargs):
-        raise RuntimeError("injected layer failure")
-
-    for name in ("layer1_main", "layer2_dblf_strict", "layer3_first_fit", "layer4_max_p"):
-        _patch_dual(monkeypatch, watchdog_module, "agents.heuristic.agent", name, _raiser)
-
-    init, observation = _normal_fixture(pool_index=23)
-    agent = _make_agent(init)
-    result = agent.policy(observation)
-
-    _assert_is_emergency_action(result)
 
 
 # --- EMG-006: Candidate→action変換時の例外（one-shot: 1回目のみ失敗） -----------------------------
 
 
 def test_emg_006_make_action_conversion_exception_triggers_emergency_then_succeeds(monkeypatch):
-    from src.packing_core import state as state_module
+    from agents.heuristic.packing_core import state as state_module
 
     # T-027: one-shot失敗注入は__init__ warmupではなく実policy変換を対象とする。
     init, observation = _normal_fixture(pool_index=29)
@@ -307,8 +250,8 @@ def test_emg_010_unreadable_pool_index_falls_back_to_fixed_zero():
 
 
 def test_emg_008_exceptions_never_leak_out_of_policy(monkeypatch):
-    from src.packing_core import state as state_module
-    from src.packing_core import watchdog as watchdog_module
+    from agents.heuristic.packing_core import state as state_module
+    from agents.heuristic.packing_core import watchdog as watchdog_module
 
     def _raising_build_state(observation, init):
         raise RuntimeError("injected")

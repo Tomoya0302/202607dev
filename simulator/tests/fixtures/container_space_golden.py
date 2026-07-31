@@ -4,7 +4,7 @@ Fixture A/B の `points`/`n_vecs` は公式 `ground_handling/utils.py::write_ope
 （PyBullet非依存の純関数）と公式 `aff()` を直接呼び出して取得する（読解のみ・コピー禁止の対象は
 `containers.py`/`utils.py` 本体であり、本モジュールはそれらを呼び出すだけで内容は変更しない）。
 
-このモジュールは `src.packing_core.container_space`（`build_container_space`/
+このモジュールは `agents.heuristic.packing_core.container_space`（`build_container_space`/
 `contains_oriented_box`/`effective_volume`/非公開関数）を一切 import しない。期待値はすべて
 `interface_notes.md` §K の式をこのモジュール内で独立に再実装して計算する。
 """
@@ -15,7 +15,7 @@ import tempfile
 import numpy as np
 
 from src.ground_handling.utils import aff, write_open_cut_corner_cup_obj
-from src.packing_core.constants import EPS_GEOM, GridParams
+from agents.heuristic.packing_core.constants import EPS_GEOM, GridParams
 
 CELL = GridParams().cell  # 0.02
 

@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from fixtures import container_space_golden as golden
-from src.packing_core import constants
+from agents.heuristic.packing_core import constants
 
 PP0 = constants.PlacementParams()  # inclusion_margin=-0.005, internal_extra=0.005,
                                     # ceiling_margin=0.018, start_z=0.08
@@ -29,7 +29,7 @@ DEFAULT_OSIZE = np.array([0.2, 0.2, 0.2], dtype=np.float64)
 
 def _box_space(inner_min, inner_max, cell):
     """cut無・棚無の軸整列直方体 space（inclusion 全般／ceiling 無棚ケース用）。"""
-    from src.packing_core.container_space import ContainerSpace
+    from agents.heuristic.packing_core.container_space import ContainerSpace
 
     imin = np.asarray(inner_min, dtype=np.float64)
     imax = np.asarray(inner_max, dtype=np.float64)
@@ -65,7 +65,7 @@ def _unit_cube_space():
 
 
 def _make_candidate(pos_rel, osize, container_idx=0, ems_id=0):
-    from src.packing_core.types import Candidate
+    from agents.heuristic.packing_core.types import Candidate
 
     return Candidate(
         item_idx=0,
@@ -91,7 +91,7 @@ def _select_main_shelf(shelf_boxes):
 
 
 def test_inclusion_fully_inside_passes():
-    from src.packing_core.masks import check_inclusion
+    from agents.heuristic.packing_core.masks import check_inclusion
 
     space = _unit_cube_space()
     cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE)
@@ -100,7 +100,7 @@ def test_inclusion_fully_inside_passes():
 
 
 def test_inclusion_at_effective_margin_boundary_passes():
-    from src.packing_core.masks import check_inclusion
+    from agents.heuristic.packing_core.masks import check_inclusion
 
     # 有効margin = -(-0.005)+0.005 = 0.010。x上端 = 0.89+0.1 = 0.99 = 1.0-0.010（境界）。
     space = _unit_cube_space()
@@ -110,7 +110,7 @@ def test_inclusion_at_effective_margin_boundary_passes():
 
 
 def test_inclusion_touching_raw_wall_rejected():
-    from src.packing_core.masks import check_inclusion
+    from agents.heuristic.packing_core.masks import check_inclusion
 
     # x上端 = 0.90+0.1 = 1.00（内壁ぴったり）。有効margin境界 0.990 を超えるため不合格。
     space = _unit_cube_space()
@@ -120,7 +120,7 @@ def test_inclusion_touching_raw_wall_rejected():
 
 
 def test_inclusion_protrusion_x_rejected():
-    from src.packing_core.masks import check_inclusion
+    from agents.heuristic.packing_core.masks import check_inclusion
 
     space = _unit_cube_space()
     cand = _make_candidate([0.91, 0.5, 0.5], DEFAULT_OSIZE)
@@ -129,7 +129,7 @@ def test_inclusion_protrusion_x_rejected():
 
 
 def test_inclusion_protrusion_y_rejected():
-    from src.packing_core.masks import check_inclusion
+    from agents.heuristic.packing_core.masks import check_inclusion
 
     space = _unit_cube_space()
     cand = _make_candidate([0.5, 0.91, 0.5], DEFAULT_OSIZE)
@@ -138,7 +138,7 @@ def test_inclusion_protrusion_y_rejected():
 
 
 def test_inclusion_below_floor_rejected():
-    from src.packing_core.masks import check_inclusion
+    from agents.heuristic.packing_core.masks import check_inclusion
 
     # z下端 = 0.09-0.1 = -0.01（床下1cm）。
     space = _unit_cube_space()
@@ -149,7 +149,7 @@ def test_inclusion_below_floor_rejected():
 
 def test_inclusion_margin_sign_semantics():
     """A14準拠の符号（負=厳格・正=緩和）とinternal_extraの厳格化方向を検証する。"""
-    from src.packing_core.masks import check_inclusion
+    from agents.heuristic.packing_core.masks import check_inclusion
 
     space = _unit_cube_space()
     # x上端 = 0.87+0.1 = 0.97（内側30mm）。
@@ -174,8 +174,8 @@ def test_inclusion_margin_sign_semantics():
 
 def test_inclusion_matches_contains_oriented_box():
     """check_inclusion は margin=-inclusion_margin+internal_extra の委譲であること（同値性）。"""
-    from src.packing_core.container_space import contains_oriented_box
-    from src.packing_core.masks import check_inclusion
+    from agents.heuristic.packing_core.container_space import contains_oriented_box
+    from agents.heuristic.packing_core.masks import check_inclusion
 
     space = _unit_cube_space()
     cases = [
@@ -196,7 +196,7 @@ def test_inclusion_matches_contains_oriented_box():
 
 
 def test_inclusion_does_not_mutate_inputs():
-    from src.packing_core.masks import check_inclusion
+    from agents.heuristic.packing_core.masks import check_inclusion
 
     space = _unit_cube_space()
     cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE)
@@ -225,7 +225,7 @@ def test_inclusion_does_not_mutate_inputs():
 
 
 def test_ceiling_ample_clearance_passes():
-    from src.packing_core.masks import check_ceiling
+    from agents.heuristic.packing_core.masks import check_ceiling
 
     # box_top=0.6、local_ceiling(無棚)=1.0、必要余裕=0.023 → 0.623<=1.0。
     space = _unit_cube_space()
@@ -235,7 +235,7 @@ def test_ceiling_ample_clearance_passes():
 
 
 def test_ceiling_at_margin_boundary_passes():
-    from src.packing_core.masks import check_ceiling
+    from agents.heuristic.packing_core.masks import check_ceiling
 
     # box_top=0.977、0.977+0.023=1.000=local_ceiling（境界、等号=合格）。
     space = _unit_cube_space()
@@ -245,17 +245,18 @@ def test_ceiling_at_margin_boundary_passes():
 
 
 def test_ceiling_slight_violation_rejected():
-    from src.packing_core.masks import check_ceiling
+    from agents.heuristic.packing_core.masks import check_ceiling
 
-    # box_top=0.978、0.978+0.023=1.001>1.0。
+    # v38: required_clearance = ceiling_margin(0.018)+internal_extra(0.001)=0.019。
+    # box_top=0.985、0.985+0.019=1.004>1.0 で天井違反。
     space = _unit_cube_space()
-    cand = _make_candidate([0.5, 0.5, 0.878], DEFAULT_OSIZE)
+    cand = _make_candidate([0.5, 0.5, 0.885], DEFAULT_OSIZE)
 
     assert check_ceiling(space, cand, PP0) is False
 
 
 def test_ceiling_internal_extra_tightens():
-    from src.packing_core.masks import check_ceiling
+    from agents.heuristic.packing_core.masks import check_ceiling
 
     # box_top=0.95。既定(必要余裕0.023)では0.973<=1.0で合格。
     # internal_extra=0.05に増やすと必要余裕0.068、1.018>1.0で不合格に転じる。
@@ -270,8 +271,8 @@ def test_ceiling_internal_extra_tightens():
 
 def test_ceiling_shelf_underside_is_local_ceiling():
     """候補とXY投影が正の面積で重なり、棚下面が候補上端以上（上方の棚）なら局所天井は棚下面。"""
-    from src.packing_core.container_space import build_container_space
-    from src.packing_core.masks import check_ceiling
+    from agents.heuristic.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.masks import check_ceiling
 
     cdict = golden.build_fixture_ab_cdict(shelf=True)
     space = build_container_space(cdict, index=0, cell=golden.CELL)
@@ -300,8 +301,8 @@ def test_ceiling_shelf_underside_is_local_ceiling():
 
 def test_ceiling_shelf_below_candidate_is_not_ceiling():
     """棚とXY投影は重なるが棚下面が候補上端未満（下方の棚）なら天井扱いしない。"""
-    from src.packing_core.container_space import build_container_space
-    from src.packing_core.masks import check_ceiling
+    from agents.heuristic.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.masks import check_ceiling
 
     cdict = golden.build_fixture_ab_cdict(shelf=True)
     space = build_container_space(cdict, index=0, cell=golden.CELL)
@@ -327,7 +328,7 @@ def test_ceiling_shelf_below_candidate_is_not_ceiling():
 
 
 def test_ceiling_returns_bool_and_does_not_mutate_inputs():
-    from src.packing_core.masks import check_ceiling
+    from agents.heuristic.packing_core.masks import check_ceiling
 
     space = _unit_cube_space()
     cand = _make_candidate([0.5, 0.5, 0.3], DEFAULT_OSIZE)
@@ -361,7 +362,7 @@ def test_ceiling_returns_bool_and_does_not_mutate_inputs():
 
 
 def _make_ems(min_rel, max_rel):
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core.types import EMSBox
 
     return EMSBox(
         min_rel=np.asarray(min_rel, dtype=np.float64),
@@ -371,7 +372,7 @@ def _make_ems(min_rel, max_rel):
 
 def _make_placed(aabb_min, aabb_max):
     """check_overlap 用の最小 PlacedItem（aabb_min_rel/aabb_max_rel のみ意味を持つ）。"""
-    from src.packing_core.types import PlacedItem
+    from agents.heuristic.packing_core.types import PlacedItem
 
     aabb_min = np.asarray(aabb_min, dtype=np.float64)
     aabb_max = np.asarray(aabb_max, dtype=np.float64)
@@ -388,7 +389,7 @@ def _make_placed(aabb_min, aabb_max):
 
 
 def _make_state(containers, placed, ems):
-    from src.packing_core.state import PackingState
+    from agents.heuristic.packing_core.state import PackingState
 
     return PackingState(
         containers=containers,
@@ -406,7 +407,7 @@ def _make_state(containers, placed, ems):
 def test_mask_stage_values():
     from enum import IntEnum
 
-    from src.packing_core.masks import MaskStage
+    from agents.heuristic.packing_core.masks import MaskStage
 
     assert issubclass(MaskStage, IntEnum)
     assert MaskStage.DIMS == 0
@@ -423,8 +424,8 @@ def test_evaluate_stage_dispatches_single_stage_only(monkeypatch):
     """指定した1段階の判定関数だけが1回呼ばれ、他は呼ばれないこと。加えて、各判定関数へ
     渡される引数が §4.5 の公開API契約（プレースホルダ引数名は公開シグネチャに一致）どおり
     であること（呼び出し回数だけでなく引数も検証する）。"""
-    from src.packing_core import masks
-    from src.packing_core.masks import MaskStage
+    from agents.heuristic.packing_core import masks
+    from agents.heuristic.packing_core.masks import MaskStage
 
     space = _unit_cube_space()
     ems_box = _make_ems([0.0, 0.0, 0.0], [0.6, 0.6, 0.6])
@@ -503,7 +504,7 @@ def test_evaluate_stage_dispatches_single_stage_only(monkeypatch):
 
 
 def test_evaluate_stage_returns_same_candidate_object():
-    from src.packing_core.masks import MaskStage, evaluate_stage
+    from agents.heuristic.packing_core.masks import MaskStage, evaluate_stage
 
     space = _unit_cube_space()
     cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
@@ -517,7 +518,7 @@ def test_evaluate_stage_returns_same_candidate_object():
 
 
 def test_evaluate_stage_pass_sets_feasible_true_and_empty_reason():
-    from src.packing_core.masks import MaskStage, evaluate_stage
+    from agents.heuristic.packing_core.masks import MaskStage, evaluate_stage
 
     space = _unit_cube_space()
     osize = DEFAULT_OSIZE.copy()
@@ -542,7 +543,7 @@ def test_evaluate_stage_pass_sets_feasible_true_and_empty_reason():
 
 
 def test_evaluate_stage_fail_sets_reject_reason_per_stage():
-    from src.packing_core.masks import MaskStage, evaluate_stage
+    from agents.heuristic.packing_core.masks import MaskStage, evaluate_stage
 
     space = _unit_cube_space()
 
@@ -562,7 +563,7 @@ def test_evaluate_stage_fail_sets_reject_reason_per_stage():
     state_overlap = _make_state([space], {0: [placed]}, {0: []})
 
     # CEILING: わずかな違反（既存 test_ceiling_slight_violation_rejected と同じ幾何）。
-    cand_ceiling = _make_candidate([0.5, 0.5, 0.878], DEFAULT_OSIZE, container_idx=0, ems_id=0)
+    cand_ceiling = _make_candidate([0.5, 0.5, 0.885], DEFAULT_OSIZE, container_idx=0, ems_id=0)
     state_ceiling = _make_state([space], {0: []}, {0: []})
 
     cases = [
@@ -581,7 +582,7 @@ def test_evaluate_stage_fail_sets_reject_reason_per_stage():
 
 
 def test_evaluate_stage_invalid_stage_raises_value_error():
-    from src.packing_core.masks import evaluate_stage
+    from agents.heuristic.packing_core.masks import evaluate_stage
 
     space = _unit_cube_space()
     cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
@@ -596,8 +597,8 @@ def test_evaluate_stage_l_path_pass_and_fail_semantics(monkeypatch):
     置換）。合格/不合格それぞれで feasible/reject_reason が正しく設定され、戻り値が同一
     Candidate であること。check_l_path はちょうど1回、state/cand/pp は同一オブジェクトで
     渡されること（引数の再構築・再解釈をしない契約の検証）。"""
-    from src.packing_core import masks
-    from src.packing_core.masks import MaskStage, evaluate_stage
+    from agents.heuristic.packing_core import masks
+    from agents.heuristic.packing_core.masks import MaskStage, evaluate_stage
 
     space = _unit_cube_space()
     cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
@@ -644,8 +645,8 @@ def test_evaluate_stage_l_path_dispatches_single_stage_only(monkeypatch):
     """MaskStage.L_PATH 指定時、check_l_path のみが1回呼ばれ、他4段階の判定関数
     （prefilter_dims/check_inclusion/check_overlap/check_ceiling）は一切呼ばれないこと
     （単一段階ディスパッチ契約の L_PATH 側での確認）。"""
-    from src.packing_core import masks
-    from src.packing_core.masks import MaskStage
+    from agents.heuristic.packing_core import masks
+    from agents.heuristic.packing_core.masks import MaskStage
 
     space = _unit_cube_space()
     cand = _make_candidate([0.5, 0.5, 0.5], DEFAULT_OSIZE, container_idx=0, ems_id=0)
@@ -691,7 +692,7 @@ def test_evaluate_stage_dims_resolves_ems_via_ems_id():
     """DIMS段階が state.ems[cand.container_idx][cand.ems_id] のindex契約でEMSを解決する
     こと。複数コンテナ・複数EMSを用意し、別コンテナまたは別indexのEMSでは合格しない
     fixtureで、正しいindexの組み合わせでのみ合格することを確認する。"""
-    from src.packing_core.masks import MaskStage, evaluate_stage
+    from agents.heuristic.packing_core.masks import MaskStage, evaluate_stage
 
     space0 = _unit_cube_space()
     space1 = _unit_cube_space()
@@ -728,7 +729,7 @@ def test_evaluate_stage_dims_resolves_ems_via_ems_id():
 def test_evaluate_stage_dims_out_of_range_ems_id_raises_index_error():
     """範囲外の ems_id に対し、evaluate_stage が独自に握りつぶさず自然な IndexError を
     送出すること（別の例外への変換や暫定合格は行わない）。"""
-    from src.packing_core.masks import MaskStage, evaluate_stage
+    from agents.heuristic.packing_core.masks import MaskStage, evaluate_stage
 
     space = _unit_cube_space()
     ems_list = [
@@ -752,7 +753,7 @@ def test_evaluate_stage_dims_out_of_range_ems_id_raises_index_error():
 
 
 def _all_stages():
-    from src.packing_core.masks import MaskStage
+    from agents.heuristic.packing_core.masks import MaskStage
 
     return (
         MaskStage.DIMS,
@@ -817,7 +818,7 @@ def _install_stage_spies(monkeypatch, masks_module, pp, *, fail_stage=None):
     Returns:
         呼び出し回数を記録する `dict`（キー: "dims"/"inclusion"/"overlap"/"ceiling"/"l_path"）。
     """
-    from src.packing_core.masks import MaskStage
+    from agents.heuristic.packing_core.masks import MaskStage
 
     calls = {"dims": 0, "inclusion": 0, "overlap": 0, "ceiling": 0, "l_path": 0}
 
@@ -858,8 +859,8 @@ def test_stage_pipeline_all_pass_runs_five_stages_in_order(monkeypatch):
     """全stage合格時、呼び出し側helperがDIMS→INCLUSION→OVERLAP→CEILING→L_PATHの順に
     ちょうど5回 evaluate_stage を呼び、各判定関数がちょうど1回ずつ実行されること。
     最終的に feasible=True・reject_reason=""・戻り値が同一Candidateであること。"""
-    from src.packing_core import masks
-    from src.packing_core.masks import evaluate_stage
+    from agents.heuristic.packing_core import masks
+    from agents.heuristic.packing_core.masks import evaluate_stage
 
     stages = _all_stages()
     state, cand = _make_pipeline_state_and_candidate()
@@ -883,8 +884,8 @@ def test_stage_pipeline_short_circuits_at_failing_stage(monkeypatch, fail_index,
     """DIMS/INCLUSION/OVERLAP/CEILING/L_PATH のいずれかで不合格になったとき、呼び出し側
     helperがその段階までしか evaluate_stage を呼ばないこと（後続段階の判定関数が一度も
     呼ばれないこと）。reject_reason が失敗段階に対応すること（全段階のE2E確認）。"""
-    from src.packing_core import masks
-    from src.packing_core.masks import evaluate_stage
+    from agents.heuristic.packing_core import masks
+    from agents.heuristic.packing_core.masks import evaluate_stage
 
     stages = _all_stages()
     fail_stage = stages[fail_index]
@@ -913,8 +914,8 @@ def test_evaluate_stage_reject_reason_overwritten_on_pass(monkeypatch):
     では一度不合格になったCandidateへ後続段階を適用しない（この2つを混同しない。本テストは
     呼び出し側が短絡せずに evaluate_stage を直接呼んだ場合の上書き契約のみを単体で確認する
     ——_run_pipeline は使わない）。"""
-    from src.packing_core import masks
-    from src.packing_core.masks import MaskStage, evaluate_stage
+    from agents.heuristic.packing_core import masks
+    from agents.heuristic.packing_core.masks import MaskStage, evaluate_stage
 
     state, cand = _make_pipeline_state_and_candidate()
     cand.feasible = False
@@ -937,7 +938,7 @@ def test_evaluate_stage_reject_reason_overwritten_on_pass(monkeypatch):
 
 def test_prefilter_dims_fits_exactly_passes():
     """osize が EMS 寸法と各軸一致（境界一致）なら合格。"""
-    from src.packing_core.masks import prefilter_dims
+    from agents.heuristic.packing_core.masks import prefilter_dims
 
     ems = _make_ems([0.0, 0.0, 0.0], [0.3, 0.4, 0.5])
     cand = _make_candidate([0.15, 0.2, 0.25], [0.3, 0.4, 0.5])
@@ -947,7 +948,7 @@ def test_prefilter_dims_fits_exactly_passes():
 
 def test_prefilter_dims_exceeds_ems_rejected():
     """いずれかの軸で osize が EMS 寸法を超えれば不合格（ここでは x 軸のみ超過）。"""
-    from src.packing_core.masks import prefilter_dims
+    from agents.heuristic.packing_core.masks import prefilter_dims
 
     ems = _make_ems([0.0, 0.0, 0.0], [0.3, 0.4, 0.5])
     cand = _make_candidate([0.155, 0.2, 0.25], [0.31, 0.4, 0.5])
@@ -961,7 +962,7 @@ def test_prefilter_dims_exceeds_ems_rejected():
 def test_check_overlap_no_placed_passes():
     """同一コンテナに既配置がなければ合格。他コンテナの配置物と重なっていても対象外
     （同一コンテナの placed だけを対象とする契約）。"""
-    from src.packing_core.masks import check_overlap
+    from agents.heuristic.packing_core.masks import check_overlap
 
     space0 = _unit_cube_space()
     space1 = _unit_cube_space()
@@ -975,9 +976,9 @@ def test_check_overlap_no_placed_passes():
 
 
 def test_check_overlap_gap_within_internal_extra_rejected():
-    """既配置との隙間が internal_extra(5mm) 未満なら tol=-internal_extra で交差扱いとなり
-    不合格（3mm の重なり、および 3mm の隙間のいずれも不合格）。"""
-    from src.packing_core.masks import check_overlap
+    """既配置との隙間が internal_extra(v38=1mm) 未満なら tol=-internal_extra で交差扱いとなり
+    不合格（3mm の重なり、および 0.5mm の隙間のいずれも不合格）。"""
+    from agents.heuristic.packing_core.masks import check_overlap
 
     space = _unit_cube_space()
     placed = _make_placed([0.4, 0.4, 0.4], [0.6, 0.6, 0.6])
@@ -988,14 +989,14 @@ def test_check_overlap_gap_within_internal_extra_rejected():
     cand_overlap_3mm = _make_candidate([0.697, 0.5, 0.5], osize, container_idx=0, ems_id=0)
     assert check_overlap(state, cand_overlap_3mm, tol=-PP0.internal_extra) is False
 
-    # 隙間3mm（<internal_extra=5mm）: center_x=0.703 → x∈[0.603,0.803]、隙間0.003。
-    cand_gap_3mm = _make_candidate([0.703, 0.5, 0.5], osize, container_idx=0, ems_id=0)
-    assert check_overlap(state, cand_gap_3mm, tol=-PP0.internal_extra) is False
+    # 隙間0.5mm（<internal_extra=1mm）: center_x=0.7005 → x∈[0.6005,0.8005]、隙間0.0005。
+    cand_gap_sub_mm = _make_candidate([0.7005, 0.5, 0.5], osize, container_idx=0, ems_id=0)
+    assert check_overlap(state, cand_gap_sub_mm, tol=-PP0.internal_extra) is False
 
 
 def test_check_overlap_sufficient_gap_passes():
     """隙間が internal_extra(5mm) 以上なら合格（8mm 隙間、および 5mm 境界のいずれも合格）。"""
-    from src.packing_core.masks import check_overlap
+    from agents.heuristic.packing_core.masks import check_overlap
 
     space = _unit_cube_space()
     placed = _make_placed([0.4, 0.4, 0.4], [0.6, 0.6, 0.6])
@@ -1037,7 +1038,7 @@ def _path_space(
     レーンクランプ）を手計算で検証できるよう `path_mid_resting_z_rel`/`path_mid_ceiling_z_rel`
     を内壁境界から独立に指定する。
     """
-    from src.packing_core.container_space import ContainerSpace
+    from agents.heuristic.packing_core.container_space import ContainerSpace
 
     imin = np.asarray(inner_min, dtype=np.float64)
     imax = np.asarray(inner_max, dtype=np.float64)
@@ -1080,7 +1081,7 @@ def _baseline_path_space():
 
 def test_l_path_sweep_boxes_baseline_y_then_x_leg_geometry():
     """クランプ・スナップ・クリップいずれも発火しない基準ケースでYレグ→Xレグの形状を検証する。"""
-    from src.packing_core.masks import l_path_sweep_boxes
+    from agents.heuristic.packing_core.masks import l_path_sweep_boxes
 
     space = _baseline_path_space()
     pp = constants.PlacementParams(start_margin=0.0, start_z=0.08, ceiling_margin=0.018)
@@ -1100,7 +1101,7 @@ def test_l_path_sweep_boxes_baseline_y_then_x_leg_geometry():
 
 def test_l_path_sweep_boxes_lane_x_clamped_to_geom_bounds():
     """target_x がレーン範囲外なら lane_x はクランプされ、Xレグはクランプ位置から実target_xまで伸びる。"""
-    from src.packing_core.masks import l_path_sweep_boxes
+    from agents.heuristic.packing_core.masks import l_path_sweep_boxes
 
     space = _baseline_path_space()
     pp = constants.PlacementParams(start_margin=0.0, start_z=0.08, ceiling_margin=0.018)
@@ -1117,7 +1118,7 @@ def test_l_path_sweep_boxes_lane_x_clamped_to_geom_bounds():
 
 def test_l_path_sweep_boxes_resting_snap_sets_rel_z_to_target_z():
     """直置き面直上0〜0.05m(RESTING_SNAP_BAND)ならeffective_start_z=0となりrel_z=target_zになる。"""
-    from src.packing_core.masks import l_path_sweep_boxes
+    from agents.heuristic.packing_core.masks import l_path_sweep_boxes
 
     space = _path_space(
         inner_min=[-1.0, -1.0, 0.0], inner_max=[1.0, 1.0, 2.0], cell=0.1,
@@ -1136,7 +1137,7 @@ def test_l_path_sweep_boxes_resting_snap_sets_rel_z_to_target_z():
 
 def test_l_path_sweep_boxes_ceiling_clip_reduces_effective_start_z():
     """天井面直前ではeffective_start_zが頭打ち回避のためクリップされる。"""
-    from src.packing_core.masks import l_path_sweep_boxes
+    from agents.heuristic.packing_core.masks import l_path_sweep_boxes
 
     space = _path_space(
         inner_min=[-1.0, -1.0, 0.0], inner_max=[1.0, 1.0, 2.0], cell=0.1,
@@ -1156,7 +1157,7 @@ def test_l_path_sweep_boxes_ceiling_clip_reduces_effective_start_z():
 
 
 def test_l_path_sweep_boxes_does_not_mutate_inputs():
-    from src.packing_core.masks import l_path_sweep_boxes
+    from agents.heuristic.packing_core.masks import l_path_sweep_boxes
 
     space = _baseline_path_space()
     pp = constants.PlacementParams()
@@ -1171,7 +1172,7 @@ def test_l_path_sweep_boxes_does_not_mutate_inputs():
 
 
 def test_check_l_path_no_obstacles_passes():
-    from src.packing_core.masks import check_l_path
+    from agents.heuristic.packing_core.masks import check_l_path
 
     space = _baseline_path_space()
     pp = constants.PlacementParams()
@@ -1183,7 +1184,7 @@ def test_check_l_path_no_obstacles_passes():
 
 def test_check_l_path_placed_item_boundary_rejected_beyond_boundary_passes():
     """P4式の境界：gap==safety_marginは不合格、safety_margin+1e-6は合格（distance_sq比較）。"""
-    from src.packing_core.masks import check_l_path, l_path_sweep_boxes
+    from agents.heuristic.packing_core.masks import check_l_path, l_path_sweep_boxes
 
     space = _baseline_path_space()
     pp = constants.PlacementParams()
@@ -1204,7 +1205,7 @@ def test_check_l_path_placed_item_boundary_rejected_beyond_boundary_passes():
 
 def test_check_l_path_uses_path_obstacle_boxes_rel():
     """既配置が空でも `path_obstacle_boxes_rel`（棚のraw AABB）と競合すれば不合格になる。"""
-    from src.packing_core.masks import check_l_path, l_path_sweep_boxes
+    from agents.heuristic.packing_core.masks import check_l_path, l_path_sweep_boxes
 
     space_no_obstacle = _baseline_path_space()
     pp = constants.PlacementParams()
@@ -1229,7 +1230,7 @@ def test_check_l_path_uses_path_obstacle_boxes_rel():
 
 
 def test_check_l_path_returns_bool_and_does_not_mutate_inputs():
-    from src.packing_core.masks import check_l_path
+    from agents.heuristic.packing_core.masks import check_l_path
 
     space = _baseline_path_space()
     pp = constants.PlacementParams()
@@ -1279,9 +1280,9 @@ def _golden_case_state_and_candidate(case, space_cache):
     """ゴールデン1件から `(state, cand, pp)` を構築する（container_space_golden の
     `write_open_cut_corner_cup_obj`/`aff` 直接呼び出しでcdictを再構成、build_container_space
     は本番コードをそのまま使用）。"""
-    from src.packing_core import geometry
-    from src.packing_core.container_space import build_container_space
-    from src.packing_core.types import Candidate, PlacedItem
+    from agents.heuristic.packing_core import geometry
+    from agents.heuristic.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.types import Candidate, PlacedItem
 
     raw = case["container_raw_config"]
     offset_x = float(case["container_origin_world"])
@@ -1333,7 +1334,7 @@ def _run_l_path_golden():
     """全1,000件を実行し `(cases, results)` を返す（`results[i]` は `check_l_path` の bool）。
     複数テストで再利用するモジュールレベルキャッシュ。
     """
-    from src.packing_core.masks import check_l_path
+    from agents.heuristic.packing_core.masks import check_l_path
 
     cases = _load_l_path_golden_cases()
     space_cache: dict = {}
@@ -1414,7 +1415,7 @@ def test_l_path_golden_performance_budget_p95_under_1ms():
     import gc
     import time
 
-    from src.packing_core.masks import check_l_path
+    from agents.heuristic.packing_core.masks import check_l_path
 
     cases = _load_l_path_golden_cases()[:300]
     space_cache: dict = {}

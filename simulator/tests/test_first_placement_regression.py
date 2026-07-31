@@ -24,10 +24,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.packing_core import constants
-from src.packing_core.container_space import build_container_space
-from src.packing_core.state import PackingState, make_action
-from src.packing_core.types import Candidate, EMSBox, ItemSpec, PlacedItem
+from agents.heuristic.packing_core import constants
+from agents.heuristic.packing_core.container_space import build_container_space
+from agents.heuristic.packing_core.state import PackingState, make_action
+from agents.heuristic.packing_core.types import Candidate, EMSBox, ItemSpec, PlacedItem
 
 SIMULATOR_ROOT = Path(__file__).resolve().parents[1]
 
@@ -106,8 +106,8 @@ def _empty_state(ems_list=None) -> PackingState:
 
 
 def test_a1_settled_bottom_equals_ems_floor_action_bottom_has_clearance():
-    from src.packing_core.candidates import candidate_from_ems
-    from src.packing_core.stability import expected_settled_pos_rel
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.stability import expected_settled_pos_rel
 
     ems = _floor_ems()
     item = _empty_item()
@@ -126,8 +126,8 @@ def test_a1_settled_bottom_equals_ems_floor_action_bottom_has_clearance():
 
 
 def test_a2_f32_roundtrip_survives_all_four_mask_stages_on_empty_container():
-    from src.packing_core.candidates import candidate_from_ems
-    from src.packing_core.masks import MaskStage, evaluate_stage
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.masks import MaskStage, evaluate_stage
 
     ems = _floor_ems()
     item = _empty_item()
@@ -157,7 +157,7 @@ def test_a2_f32_roundtrip_survives_all_four_mask_stages_on_empty_container():
 
 
 def test_a3_insufficient_z_headroom_yields_no_candidate():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _empty_item()
     z_gen_clearance = _z_generation_clearance(PP0)
@@ -177,7 +177,7 @@ def test_a3_insufficient_z_headroom_yields_no_candidate():
 
 
 def test_b1_action_position_raised_above_settled_still_reports_full_support():
-    from src.packing_core.stability import cg_margin, expected_settled_pos_rel, support_polygon, support_ratio
+    from agents.heuristic.packing_core.stability import cg_margin, expected_settled_pos_rel, support_polygon, support_ratio
 
     ems = _floor_ems()
     item = _empty_item()
@@ -204,7 +204,7 @@ def test_b1_action_position_raised_above_settled_still_reports_full_support():
 
 
 def test_b2_expected_settled_pos_rel_does_not_mutate_candidate():
-    from src.packing_core.stability import expected_settled_pos_rel
+    from agents.heuristic.packing_core.stability import expected_settled_pos_rel
 
     ems = _floor_ems()
     state = _empty_state(ems_list=[ems])
@@ -223,7 +223,7 @@ def test_b2_expected_settled_pos_rel_does_not_mutate_candidate():
 
 
 def test_b3_expected_settled_pos_rel_raises_on_invalid_container_or_ems_id():
-    from src.packing_core.stability import expected_settled_pos_rel
+    from agents.heuristic.packing_core.stability import expected_settled_pos_rel
 
     state = _empty_state(ems_list=[_floor_ems()])
     cand_bad_container = Candidate(
@@ -256,11 +256,12 @@ def _watchdog_cand(item_idx=0, p_success=1.0):
 
 
 def _key(cand):
-    return (cand.item_idx, cand.container_idx, cand.orientation, cand.ems_id)
+    # HF-003: L_PATH キャッシュキーは anchor を含む 5-tuple（candidates.candidate_key と同順）。
+    return (cand.item_idx, cand.container_idx, cand.orientation, cand.ems_id, cand.anchor)
 
 
 def _never_over_budget():
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.watchdog import StepBudget
     return StepBudget(t0=0.0, soft=1e6, hard=2e6, now_fn=lambda: 0.0)
 
 
@@ -269,8 +270,8 @@ def _minimal_state():
 
 
 def test_c1_layer3_first_fit_never_returns_known_failing_candidate():
-    from src.packing_core.candidates import CandidatePools
-    from src.packing_core.watchdog import layer3_first_fit
+    from agents.heuristic.packing_core.candidates import CandidatePools
+    from agents.heuristic.packing_core.watchdog import layer3_first_fit
 
     c_pass = _watchdog_cand(item_idx=0)
     c_unknown = _watchdog_cand(item_idx=1)
@@ -304,8 +305,8 @@ def test_c1_layer3_first_fit_never_returns_known_failing_candidate():
 
 
 def test_c2_layer4_max_p_ignores_inclusion_failing_and_l_path_failing_candidates():
-    from src.packing_core.candidates import CandidatePools
-    from src.packing_core.watchdog import layer4_max_p
+    from agents.heuristic.packing_core.candidates import CandidatePools
+    from agents.heuristic.packing_core.watchdog import layer4_max_p
 
     c_inclusion_reject = _watchdog_cand(item_idx=0, p_success=0.99)  # dimsのみ、geoに無い
     c_l_path_reject = _watchdog_cand(item_idx=1, p_success=0.95)  # geoにいるがL_PATH既知不合格
@@ -406,16 +407,11 @@ def test_e1_official_runner_path_empty_container_first_step(tmp_path):
     assert len(rows) >= 1
     first_row = rows[0]
 
-    assert first_row["n_cand0"] > 0
-    assert first_row["n_after_dims"] > 0
-    assert first_row["n_after_geo"] > 0, (
-        "n_after_geo==0はHF-001の症状そのもの"
-        "（空コンテナ初手が自己INCLUSION判定で全滅している）"
-    )
-    assert first_row["decided_layer"] != 4, (
-        "decided_layer==4はlayer4_max_pへ縮退したことを意味し、"
-        "n_after_geo>0の下でも幾何合格を保証しないためHF-001の再発を疑う"
-    )
+    # v38 (HF-012 Phase H1): agent.policy は heightmap 配置エンジンに置換され、EMS 列挙〜
+    # safe_decide 由来の counter（n_cand0/n_after_dims/n_after_geo）と decided_layer 縮退は
+    # policy 経路では非populate（0）になった。HF-001 の本質的な回帰ガードは下の公式 validator
+    # 結果（is_included is True）であり、そちらで担保する。
+    assert first_row["decided_layer"] >= 0
 
     result_path = result_dir / "evaluation_results.json"
     with open(result_path) as f:

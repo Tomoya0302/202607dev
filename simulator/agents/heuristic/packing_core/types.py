@@ -95,6 +95,8 @@ class Candidate:
         orientation: §3.2 の orientation コード（0..5）。
         pos_rel: 配置中心（コンテナ相対）。shape (3,), float64。
         osize: 回転後寸法。shape (3,), float64。
+        anchor: HF-003 の EMS内アンカー識別子（0=DBLF最小角。同一(item,container,orientation,
+            ems_id)でも壁寄せ等でpos_relが異なる候補を一意化し、L_PATHキャッシュキーの衝突を防ぐ）。
         feasible: 全段階フィルタ通過で True。
         reject_reason: 不合格理由（"dims"|"inclusion"|"overlap"|"ceiling"|"path"|""）。
         features: §4.8 の特徴量辞書。
@@ -108,6 +110,7 @@ class Candidate:
     orientation: int
     pos_rel: Vec3
     osize: Vec3
+    anchor: int = 0
     feasible: bool = False
     reject_reason: str = ""
     features: dict = field(default_factory=dict)

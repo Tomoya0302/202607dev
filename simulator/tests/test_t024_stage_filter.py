@@ -17,10 +17,10 @@ Candidate（や Candidate のリスト）比較は曖昧な真偽値エラーを
 import numpy as np
 import pytest
 
-from src.packing_core import constants
-from src.packing_core.container_space import build_container_space
-from src.packing_core.state import PackingState
-from src.packing_core.types import Candidate, EMSBox
+from agents.heuristic.packing_core import constants
+from agents.heuristic.packing_core.container_space import build_container_space
+from agents.heuristic.packing_core.state import PackingState
+from agents.heuristic.packing_core.types import Candidate, EMSBox
 
 INNER_MIN_REL = np.array([-0.40, -0.40, 0.02], dtype=np.float64)
 INNER_MAX_REL = np.array([0.40, 0.40, 1.02], dtype=np.float64)
@@ -85,7 +85,7 @@ def _state(n_placed_items=0):
 
 
 def _budget_never_over():
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.watchdog import StepBudget
     return StepBudget(t0=0.0, soft=1e6, hard=2e6, now_fn=lambda: 0.0)
 
 
@@ -105,7 +105,7 @@ class _FlipClock:
 
 def _install_leaf_spies(monkeypatch, *, dims=True, inclusion=True, overlap=True, ceiling=True):
     """4段階leaf関数を固定の合否でスパイ化し、呼出し回数を記録する（実ジオメトリ非依存）。"""
-    from src.packing_core import masks
+    from agents.heuristic.packing_core import masks
 
     calls = {"dims": 0, "inclusion": 0, "overlap": 0, "ceiling": 0}
 
@@ -141,7 +141,7 @@ def _install_leaf_spies(monkeypatch, *, dims=True, inclusion=True, overlap=True,
     ],
 )
 def test_filt_001_short_circuits_at_failing_stage(monkeypatch, case, flags, expected_calls):
-    from src.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.candidates import filter_candidates
 
     calls = _install_leaf_spies(monkeypatch, **flags)
     state = _state()
@@ -157,7 +157,7 @@ def test_filt_001_short_circuits_at_failing_stage(monkeypatch, case, flags, expe
 
 
 def test_filt_003_reject_reason_is_first_failing_stage(monkeypatch):
-    from src.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.candidates import filter_candidates
 
     _install_leaf_spies(monkeypatch, dims=True, inclusion=False, overlap=True, ceiling=True)
     state = _state()
@@ -174,7 +174,7 @@ def test_filt_003_reject_reason_is_first_failing_stage(monkeypatch):
 
 
 def test_filt_004_reject_counts_only_first_failing_stage(monkeypatch):
-    from src.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.candidates import filter_candidates
 
     _install_leaf_spies(monkeypatch, dims=True, inclusion=False, overlap=True, ceiling=True)
     state = _state()
@@ -191,8 +191,8 @@ def test_filt_004_reject_counts_only_first_failing_stage(monkeypatch):
 
 def _three_candidate_dims_geo_fixture(monkeypatch):
     """dims不合格1件・geo不合格1件（dims合格）・全合格1件、の3Candidate fixture。"""
-    from src.packing_core.candidates import filter_candidates
-    from src.packing_core import masks
+    from agents.heuristic.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core import masks
 
     cand_dims_fail = _cand(item_idx=0)
     cand_geo_fail = _cand(item_idx=1)
@@ -240,7 +240,7 @@ def test_filt_006_geo_candidates_contains_only_all_four_stages_passing(monkeypat
 
 
 def _empty_pools_after_single_pass(monkeypatch):
-    from src.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.candidates import filter_candidates
 
     _install_leaf_spies(monkeypatch)
     state = _state()
@@ -262,8 +262,8 @@ def test_filt_008_l_path_cache_initialized_empty(monkeypatch):
 
 
 def test_filt_009_does_not_compute_l_path_score_or_risk(monkeypatch):
-    from src.packing_core import masks
-    from src.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core import masks
+    from agents.heuristic.packing_core.candidates import filter_candidates
 
     _install_leaf_spies(monkeypatch)
     l_path_calls = []
@@ -271,14 +271,14 @@ def test_filt_009_does_not_compute_l_path_score_or_risk(monkeypatch):
 
     score_calls = []
     try:
-        from src.packing_core import score as score_module
+        from agents.heuristic.packing_core import score as score_module
         monkeypatch.setattr(score_module, "heuristic_score", lambda *a, **k: score_calls.append(1), raising=False)
     except ImportError:
         pass  # score.py未実装。呼ばれ得ないため0回のまま。
 
     risk_calls = []
     try:
-        from src.packing_core import risk as risk_module
+        from agents.heuristic.packing_core import risk as risk_module
         monkeypatch.setattr(risk_module, "provisional_p_ng", lambda *a, **k: risk_calls.append(1), raising=False)
     except ImportError:
         pass
@@ -296,8 +296,8 @@ def test_filt_009_does_not_compute_l_path_score_or_risk(monkeypatch):
 
 
 def test_filt_010_dims_subset_of_raw_geo_subset_of_dims_order_preserved(monkeypatch):
-    from src.packing_core.candidates import filter_candidates
-    from src.packing_core import masks
+    from agents.heuristic.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core import masks
 
     # c0: dims fail / c1: dims pass, inclusion fail / c2: dims+inclusion pass, overlap fail /
     # c3: 全段階pass
@@ -333,8 +333,8 @@ def test_filt_010_dims_subset_of_raw_geo_subset_of_dims_order_preserved(monkeypa
 
 def _mid_termination_fixture(monkeypatch):
     """budget_poll_every=1・6候補・2回目のover_soft確認で超過するfixture。"""
-    from src.packing_core.candidates import filter_candidates
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.watchdog import StepBudget
 
     _install_leaf_spies(monkeypatch)  # 全段階pass想定（timeout前に処理された分は合格扱い）
 
@@ -386,8 +386,8 @@ def test_filt_014_n_cand0_does_not_decrease_on_timeout(monkeypatch):
 
 
 def test_filt_015_already_over_soft_at_start(monkeypatch):
-    from src.packing_core.candidates import filter_candidates
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.watchdog import StepBudget
 
     _install_leaf_spies(monkeypatch)
     raw = [_cand(item_idx=0), _cand(item_idx=1)]
@@ -414,8 +414,8 @@ def test_filt_015_already_over_soft_at_start(monkeypatch):
 def test_filt_016_rechecks_periodically_not_only_at_start(monkeypatch):
     """開始時点のチェックは通過（under）させ、後続の再チェックでのみ超過を検出させる
     ことで、単発チェックではなく周期的な再確認が行われることを確認する。"""
-    from src.packing_core.candidates import filter_candidates
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.watchdog import StepBudget
 
     _install_leaf_spies(monkeypatch)
     raw = [_cand(item_idx=i) for i in range(8)]
@@ -437,7 +437,7 @@ def test_filt_016_rechecks_periodically_not_only_at_start(monkeypatch):
 
 
 def test_filt_017_non_positive_poll_every_raises_value_error(monkeypatch):
-    from src.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.candidates import filter_candidates
 
     _install_leaf_spies(monkeypatch)
     state = _state()
@@ -453,8 +453,8 @@ def test_filt_017_non_positive_poll_every_raises_value_error(monkeypatch):
 
 
 def test_filt_018_no_separate_hard_only_branch(monkeypatch):
-    from src.packing_core.candidates import filter_candidates
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.watchdog import StepBudget
 
     _install_leaf_spies(monkeypatch)
     raw = [_cand(item_idx=i) for i in range(3)]
@@ -475,7 +475,7 @@ def test_filt_018_no_separate_hard_only_branch(monkeypatch):
 
 
 def test_filt_019_raw_candidates_preserves_input_order_and_element_identity(monkeypatch):
-    from src.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.candidates import filter_candidates
 
     _install_leaf_spies(monkeypatch)
     raw = [_cand(item_idx=i) for i in range(4)]
@@ -533,7 +533,7 @@ def _reject_fixture_state_and_candidate():
 def test_filt_020_hand_computed_pass_reject_fixtures(
     fixture_fn, expected_in_geo, expected_reject_reason, expected_reject_counts
 ):
-    from src.packing_core.candidates import filter_candidates
+    from agents.heuristic.packing_core.candidates import filter_candidates
 
     state, cand = fixture_fn()
     tp = constants.TimeParams()

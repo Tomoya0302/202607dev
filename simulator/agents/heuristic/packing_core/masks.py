@@ -12,20 +12,20 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from src.packing_core import geometry
-from src.packing_core.constants import (
+from . import geometry
+from .constants import (
     CEILING_CLIP_SAFETY,
     EPS_GEOM,
     RESTING_SNAP_BAND,
     PlacementParams,
 )
-from src.packing_core.container_space import ContainerSpace, contains_oriented_box
-from src.packing_core.types import Candidate, EMSBox, Vec3
+from .container_space import ContainerSpace, contains_oriented_box
+from .types import Candidate, EMSBox, Vec3
 
 if TYPE_CHECKING:
     # 循環import回避（state.py はこのモジュールをimportしないが、逆方向の実行時依存を
     # 作らないよう型チェック専用importに留める）。
-    from src.packing_core.state import PackingState
+    from .state import PackingState
 
 
 def check_inclusion(space: ContainerSpace, cand: Candidate, pp: PlacementParams) -> bool:

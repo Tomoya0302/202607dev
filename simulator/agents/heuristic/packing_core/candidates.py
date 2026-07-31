@@ -12,18 +12,26 @@ from dataclasses import dataclass, field
 import numpy as np
 from typing import TYPE_CHECKING
 
-from src.packing_core.constants import PlacementParams, TimeParams
-from src.packing_core.geometry import oriented_size
-from src.packing_core.masks import MaskStage, evaluate_stage
-from src.packing_core.types import Candidate, EMSBox, ItemSpec
-from src.packing_core.watchdog import StepBudget
+from .constants import PlacementParams, TimeParams
+from .geometry import oriented_size
+from .masks import MaskStage, evaluate_stage
+from .types import Candidate, EMSBox, ItemSpec
+from .watchdog import StepBudget
 
 if TYPE_CHECKING:
     # 循環import回避（state.py は本モジュールをimportしないが、逆方向の実行時依存を
     # 作らないよう型チェック専用importに留める。masks.py/stability.py と同方針）。
-    from src.packing_core.state import PackingState
+    from .state import PackingState
 
-CandidateKey = tuple[int, int, int, int]  # (item_idx, container_idx, orientation, ems_id)
+CandidateKey = tuple[int, int, int, int, int]  # (item_idx, container_idx, orientation, ems_id, anchor)
+
+# HF-003: 候補上限。多アンカー化で raw 候補が (コンテナ×EMS×向き×アンカー) と積算され
+# 数千件に達し、下流の特徴量計算（cg_margin=凸包）が policy 時間予算(8s)を圧迫するため、
+# enumerate 段で決定論的接頭辞として上限を課す。EMSは低z・大容量優先でソート済み
+# （select_topn）なので、接頭辞は良質なEMSを保持する。
+# HF-010: 1500→5000 に引上げ（ems_top_n 220 では 220×6向き×4アンカー≈5280 と積算されるため、
+# 1500 では搬入可能候補を打ち切っていた）。2vCPU で最大 policy ≤2.6s と予算内、積載数 +44%。
+MAX_RAW_CANDIDATES = 5000
 
 
 @dataclass
@@ -48,48 +56,57 @@ class CandidatePools:
 
 
 def candidate_key(cand: Candidate) -> CandidateKey:
-    """`Candidate` から `(item_idx, container_idx, orientation, ems_id)` を射影する（§4.12）。
+    """`Candidate` から `(item_idx, container_idx, orientation, ems_id, anchor)` を射影する（§4.12）。
+
+    HF-003: `anchor` を含める。同一(item,container,orientation,ems_id)でもアンカー違いで
+    pos_rel が異なる複数候補が存在しうるため、L_PATHキャッシュキーの衝突（別位置候補の
+    合否を誤って再利用する）を防ぐ。
 
     Args:
         cand: 対象の配置候補。
 
     Returns:
-        全要素が組込み `int` の4要素タプル。
+        全要素が組込み `int` の5要素タプル。
     """
     return (
         int(cand.item_idx),
         int(cand.container_idx),
         int(cand.orientation),
         int(cand.ems_id),
+        int(cand.anchor),
     )
 
 
-def candidate_from_ems(
+# HF-003/HF-007: side-load 挿入性のためのアンカー集合（決定順）。各要素は (x, y) で
+# "min"=軸最小面寄せ / "max"=軸最大面寄せ / "mid"=軸中央。EMS床面上の複数位置に荷物を置く
+# ことで、既配置荷物で搬入経路(L字, safety_margin=15mm)が塞がれても別位置で挿入できる確率を
+# 上げる（多アンカーは v1→v2 で積載16%→28%を実証した唯一のレバー）。
+# 先頭4隅は現行DBLF/壁寄せ（実証済み）で、予算打切り時も接頭辞として残す。HF-007 grid3 は
+# さらに辺中点・中央を加え、幅広EMSで搬入経路の空いた中間X列へ置ける候補を増やす。
+# HF-003: side-load 挿入性のためのアンカー集合（4隅、決定順）。DBLF(X若い側・Y奥)＋壁寄せ隅。
+# 注記: HF-007 の 3×3グリッド(9点)はローカル2vCPUでは+6%だったが**プラットフォームで-9%回帰**した
+# （ローカルA/Bはプラットフォームを予測しない）ため v2 実証の4隅へ戻した。
+_ANCHORS: tuple[tuple[str, str], ...] = (
+    ("min", "max"), ("max", "max"), ("min", "min"), ("max", "min"),
+)
+
+
+def _candidate_at_anchor(
     item: ItemSpec,
     container_idx: int,
     orientation: int,
     ems_id: int,
     ems: EMSBox,
     pp: PlacementParams,
+    x_side: str,
+    y_side: str,
+    anchor: int = 0,
 ) -> Candidate | None:
-    """1つの (item, container, orientation, EMS) 組合せから候補を生成する（§4.12、HF-001でv1.27改訂）。
+    """指定アンカー（X/Y各 min|max 面寄せ / mid 中央）で1候補を生成する（§4.12、HF-003/HF-007）。
 
-    DBLF最小角（X=若い側／Y=奥(+Y)／Z=EMS支持面から`z_generation_clearance`だけ浮いた
-    action位置）で `pos_rel` を固定する。想定沈降後位置（EMS支持面へ底面一致する位置）は
-    `pos_rel` とは別に `stability.expected_settled_pos_rel` が導出する（§4.6）。
-    `prefilter_dims` 等のmask判定はここでは呼ばない。別EMSへの再割当は行わない（案A）。
-    入力の `ItemSpec`/`EMSBox`/配列は変更しない。
-
-    Args:
-        item: 対象荷物の `ItemSpec`。
-        container_idx: 対象コンテナ index。
-        orientation: §3.2 の orientation コード（0..5）。
-        ems_id: 対象 EMS の index（`state.ems[container_idx]` 内の0始まり位置）。
-        ems: 対象 EMS。
-        pp: 配置判定パラメータ。
-
-    Returns:
-        寸法確認（§4.12「候補生成前の寸法確認」）を満たせば新規 `Candidate`、満たさなければ `None`。
+    Z は常にEMS支持面（`settled_z + z_generation_clearance`）。X/Y は `x_side`/`y_side` が
+    `"min"`→軸最小面へ、`"max"`→軸最大面へ生成クリアランスだけ内側に寄せ、`"mid"`→軸中央。
+    寸法確認を満たさなければ `None`。入力オブジェクト・配列は変更しない。
     """
     osize = np.array(oriented_size(item.size, orientation), dtype=np.float64)
     ems_size = ems.size()
@@ -106,15 +123,18 @@ def candidate_from_ems(
     ):
         return None
 
+    def _axis(lo: float, hi: float, half: float, which: str) -> float:
+        if which == "min":
+            return lo + half + xy_generation_clearance
+        if which == "max":
+            return hi - half - xy_generation_clearance
+        return (lo + hi) / 2.0  # "mid": 荷物をEMS中央へ（寸法確認済みなので範囲内）
+
     settled_z = float(ems.min_rel[2]) + float(osize[2]) / 2.0
-    pos_rel = np.array(
-        [
-            float(ems.min_rel[0]) + float(osize[0]) / 2.0 + xy_generation_clearance,
-            float(ems.max_rel[1]) - float(osize[1]) / 2.0 - xy_generation_clearance,
-            settled_z + z_generation_clearance,
-        ],
-        dtype=np.float64,
-    )
+    pos_x = _axis(float(ems.min_rel[0]), float(ems.max_rel[0]), float(osize[0]) / 2.0, x_side)
+    pos_y = _axis(float(ems.min_rel[1]), float(ems.max_rel[1]), float(osize[1]) / 2.0, y_side)
+
+    pos_rel = np.array([pos_x, pos_y, settled_z + z_generation_clearance], dtype=np.float64)
 
     return Candidate(
         item_idx=int(item.idx),
@@ -123,7 +143,58 @@ def candidate_from_ems(
         orientation=int(orientation),
         pos_rel=pos_rel,
         osize=osize,
+        anchor=int(anchor),
     )
+
+
+def candidate_from_ems(
+    item: ItemSpec,
+    container_idx: int,
+    orientation: int,
+    ems_id: int,
+    ems: EMSBox,
+    pp: PlacementParams,
+) -> Candidate | None:
+    """1つの (item, container, orientation, EMS) 組合せからDBLF最小角候補を生成する（§4.12）。
+
+    現行DBLF最小角（X=若い側／Y=奥(+Y)／Z=EMS支持面から`z_generation_clearance`だけ浮いた
+    action位置）。想定沈降後位置は `stability.expected_settled_pos_rel` が別途導出する（§4.6）。
+    単一候補を返す既存契約を維持する（多様なアンカーは `candidate_variants_from_ems`）。
+    """
+    return _candidate_at_anchor(
+        item, container_idx, orientation, ems_id, ems, pp, x_side="min", y_side="max"
+    )
+
+
+def candidate_variants_from_ems(
+    item: ItemSpec,
+    container_idx: int,
+    orientation: int,
+    ems_id: int,
+    ems: EMSBox,
+    pp: PlacementParams,
+) -> list[Candidate]:
+    """1つの (item, container, orientation, EMS) 組合せから複数アンカー候補を生成する（§4.12、HF-003）。
+
+    `_ANCHORS` の決定順で各隅の候補を生成し、`None`（寸法不足）と、XY位置が既出と一致する
+    重複（EMSが荷物とほぼ同寸で min/max 隅が一致する場合）を除いた順序保存リストを返す。
+    先頭は現行DBLF最小角であり、既存の単一候補挙動を接頭辞として含む。
+    """
+    variants: list[Candidate] = []
+    seen: set[tuple[float, float]] = set()
+    for anchor_idx, (x_side, y_side) in enumerate(_ANCHORS):
+        cand = _candidate_at_anchor(
+            item, container_idx, orientation, ems_id, ems, pp,
+            x_side=x_side, y_side=y_side, anchor=anchor_idx,
+        )
+        if cand is None:
+            continue
+        key = (round(float(cand.pos_rel[0]), 6), round(float(cand.pos_rel[1]), 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        variants.append(cand)
+    return variants
 
 
 def enumerate_candidates(
@@ -155,16 +226,35 @@ def enumerate_candidates(
     if budget.over_soft():
         return []
 
+    # 基本順序（pool → container → orientation → ems）を維持しつつ、HF-003で1EMSごとに
+    # 壁寄せ隅を含む複数アンカーを展開する。多アンカーで候補数が (コンテナ×EMS×向き×アンカー)
+    # と積算されるため、コンテナ単位の上限 `per_container_cap` を課して policy 時間予算(8s)を
+    # 守る。上限をコンテナ単位にすることで、グローバル上限が後続コンテナを丸ごと落とす問題を
+    # 避ける（単一コンテナでは実質 MAX_RAW_CANDIDATES）。
+    n_containers = len(state.containers)
+    per_container_cap = MAX_RAW_CANDIDATES
+    if n_containers > 1:
+        per_container_cap = max(1, MAX_RAW_CANDIDATES // n_containers)
+
     result: list[Candidate] = []
     n_processed = 0
     for item in state.pool:
-        for container_idx in range(len(state.containers)):
+        for container_idx in range(n_containers):
+            container_start = len(result)
+            stop_container = False
             for orientation in range(6):
+                if stop_container:
+                    break
                 for ems_id, ems in enumerate(state.ems[container_idx]):
-                    cand = candidate_from_ems(item, container_idx, orientation, ems_id, ems, pp)
-                    if cand is not None:
-                        result.append(cand)
+                    result.extend(
+                        candidate_variants_from_ems(
+                            item, container_idx, orientation, ems_id, ems, pp
+                        )
+                    )
                     n_processed += 1
+                    if len(result) - container_start >= per_container_cap:
+                        stop_container = True
+                        break
                     if n_processed % tp.budget_poll_every == 0 and budget.over_soft():
                         return result
     return result

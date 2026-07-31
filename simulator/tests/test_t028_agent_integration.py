@@ -85,9 +85,8 @@ def test_ag_normal_line_writes_one_valid_row_with_finite_png(tmp_path, monkeypat
     assert set(row.keys()) == _REQUIRED_KEYS
     assert row["decided_layer"] >= 1
     assert row["regime"] is None
-    assert row["p_ng_chosen"] is not None
-    assert math.isfinite(row["p_ng_chosen"])
-    assert 0.0 <= row["p_ng_chosen"] <= 1.0
+    # v38 (HF-012 Phase H1): heightmap 配置エンジンは provisional_p_ng を計算しないため None。
+    assert row["p_ng_chosen"] is None
 
 
 def test_ag_step_seq_first_step_true_then_false_across_calls(tmp_path, monkeypatch):
@@ -126,7 +125,7 @@ def test_ag_empty_zero_candidates_writes_emergency_row(tmp_path, monkeypatch):
 
 
 def test_ag_buildfail_build_state_exception_writes_default_timing_row(tmp_path, monkeypatch):
-    from src.packing_core import state as state_module
+    from agents.heuristic.packing_core import state as state_module
 
     def _raising_build_state(observation, init):
         raise RuntimeError("injected build_state failure (T-028 AG-BUILDFAIL)")
@@ -156,7 +155,7 @@ def test_ag_actionfail_make_action_exception_still_records_finite_png(tmp_path, 
     """safe_decideがCandidateを返した後にmake_action変換が失敗しemergencyへフォールバックしても、
     選択済みCandidateのprovisional_p_ngを記録する（§4.13 D5「その後のaction変換が失敗し
     _emergency_actionへフォールバックした場合を含む」）。"""
-    from src.packing_core import state as state_module
+    from agents.heuristic.packing_core import state as state_module
 
     # T-027: one-shot失敗注入は__init__ warmupではなく実policy変換を対象とする。
     _set_env(monkeypatch, tmp_path, "ag-actionfail")
@@ -182,9 +181,9 @@ def test_ag_actionfail_make_action_exception_still_records_finite_png(tmp_path, 
     rows = _read_jsonl(_telemetry_path(tmp_path, "ag-actionfail"))
     assert len(rows) == 1
     row = rows[0]
-    assert row["decided_layer"] >= 1  # safe_decideはCandidateを返した
-    assert row["p_ng_chosen"] is not None
-    assert math.isfinite(row["p_ng_chosen"])
+    assert row["decided_layer"] >= 1  # heightmap がCandidateを返した
+    # v38 (HF-012 Phase H1): heightmap 配置エンジンは provisional_p_ng を計算しないため None。
+    assert row["p_ng_chosen"] is None
 
 
 def test_ag_step_always_increments_even_when_writer_fails(tmp_path, monkeypatch):
@@ -207,7 +206,7 @@ def test_ag_step_always_increments_even_when_writer_fails(tmp_path, monkeypatch)
 
 def test_ag_noleak_exceptions_never_leak_out_of_policy_with_telemetry_enabled(tmp_path, monkeypatch):
     """telemetry配線を追加してもpolicy()の無例外送出契約（§4.11）は保たれる。"""
-    from src.packing_core import state as state_module
+    from agents.heuristic.packing_core import state as state_module
 
     def _raising_build_state(observation, init):
         raise RuntimeError("injected")

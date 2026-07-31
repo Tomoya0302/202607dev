@@ -25,10 +25,10 @@ import math
 import numpy as np
 import pytest
 
-from src.packing_core import constants
-from src.packing_core.container_space import ContainerSpace, bake_placed, build_container_space
-from src.packing_core.state import PackingState
-from src.packing_core.types import Candidate, EMSBox, ItemSpec, PlacedItem
+from agents.heuristic.packing_core import constants
+from agents.heuristic.packing_core.container_space import ContainerSpace, bake_placed, build_container_space
+from agents.heuristic.packing_core.state import PackingState
+from agents.heuristic.packing_core.types import Candidate, EMSBox, ItemSpec, PlacedItem
 
 INNER_MIN_REL = np.array([-0.40, -0.40, 0.02], dtype=np.float64)
 INNER_MAX_REL = np.array([0.40, 0.40, 1.02], dtype=np.float64)
@@ -125,7 +125,7 @@ def _state(pool, placed=()):
 
 
 def _score(state, cand, sp=SP0):
-    from src.packing_core.score import heuristic_score
+    from agents.heuristic.packing_core.score import heuristic_score
     return heuristic_score(state, cand, sp)
 
 
@@ -305,7 +305,7 @@ def test_score_011_valid_input_returns_finite_value():
 
 
 def test_score_012_does_not_mutate_candidate_state_or_item():
-    from src.packing_core.score import heuristic_score
+    from agents.heuristic.packing_core.score import heuristic_score
 
     item = _item(idx=0, weight=3.0)
     state = _state([item])
@@ -331,7 +331,7 @@ def test_score_012_does_not_mutate_candidate_state_or_item():
 
 
 def test_score_013_does_not_call_cg_margin(monkeypatch):
-    from src.packing_core import stability
+    from agents.heuristic.packing_core import stability
 
     calls = []
     monkeypatch.setattr(stability, "cg_margin", lambda *a, **k: calls.append(1) or 0.0, raising=False)
@@ -400,7 +400,7 @@ def _degenerate_space_x():
 
 
 def test_score_015_degenerate_span_raises_value_error():
-    from src.packing_core.score import heuristic_score
+    from agents.heuristic.packing_core.score import heuristic_score
 
     item = _item(weight=3.0)
     space = _degenerate_space_x()
@@ -501,15 +501,15 @@ def _case_weights(field, value):
 def _patch_support_ratio(monkeypatch, fn):
     """`stability.support_ratio` を、import文の形式（`from...import`か`module.attr`か）に
     依存せず確実にスパイ化する（両方のバインディング箇所へ patch、片方はraising=False）。"""
-    from src.packing_core import score as score_module
-    from src.packing_core import stability
+    from agents.heuristic.packing_core import score as score_module
+    from agents.heuristic.packing_core import stability
     monkeypatch.setattr(stability, "support_ratio", fn, raising=False)
     monkeypatch.setattr(score_module, "support_ratio", fn, raising=False)
 
 
 def _patch_soft_below_ratio(monkeypatch, fn):
-    from src.packing_core import score as score_module
-    from src.packing_core import stability
+    from agents.heuristic.packing_core import score as score_module
+    from agents.heuristic.packing_core import stability
     monkeypatch.setattr(stability, "soft_below_ratio", fn, raising=False)
     monkeypatch.setattr(score_module, "soft_below_ratio", fn, raising=False)
 
@@ -549,7 +549,7 @@ _SUPPORT_SOFT_CASES = [
 
 @pytest.mark.parametrize("case_id", [p.id for p in _SCORE_016_CASES] + _SUPPORT_SOFT_CASES)
 def test_score_016_invalid_input_raises_value_error(monkeypatch, case_id):
-    from src.packing_core.score import heuristic_score
+    from agents.heuristic.packing_core.score import heuristic_score
 
     by_id = {p.id: p.values[0] for p in _SCORE_016_CASES}
 

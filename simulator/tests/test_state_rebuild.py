@@ -31,7 +31,7 @@ import math
 import numpy as np
 import pytest
 
-from src.packing_core import constants
+from agents.heuristic.packing_core import constants
 
 CELL = constants.GridParams().cell
 IDENTITY_QUAT: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
@@ -215,8 +215,8 @@ def _scattered_disjoint_aabbs(
 
     全AABBが同じ床 `inner_min[2]` から起立するため、XY footprint が非重複なら3D非重複が
     保証される。サイズ・位置をばらつかせることで `generate_ems` の候補数を素早く増やし、
-    `StageParams().ems_top_n_per_container`（=80）を超える決定論的fixtureを作る
-    （作成時に実際に `generate_ems` を実行し、n=9で72件・n=10で84件になることを確認済み）。
+    `StageParams().ems_top_n_per_container`（v38=220）を超える決定論的fixtureを作る
+    （作成時に実際に `generate_ems` を実行し、n=19で206件・n=20で225件になることを確認済み）。
     """
     aabbs: list[tuple[np.ndarray, np.ndarray]] = []
     tries = 0
@@ -303,8 +303,8 @@ def test_state_rebuild_cache_none_first_step_matches_full():
     `heights[idx]` が `build_state` の height と一致し `writeable=False` であること、
     `ems_full[idx]` が select_topn 前の `generate_ems` 相当（tuple）と一致することを検証する。
     """
-    from src.packing_core import ems as ems_module
-    from src.packing_core import state
+    from agents.heuristic.packing_core import ems as ems_module
+    from agents.heuristic.packing_core import state
 
     offsets = [0.0, 2.0]
     specs = [(i, off, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX) for i, off in enumerate(offsets)]
@@ -345,7 +345,7 @@ def test_state_rebuild_hit_single_add_empty_to_one():
     step1（既配置0件）で作った cache を使い、step2（1個追加）が `build_state` と
     同値になることを検証する（`cache_bake_placed` + 既存 `update_ems` の増分適用）。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
 
@@ -373,7 +373,7 @@ def test_state_rebuild_hit_sequential_adds_each_step_matches_full():
     同ステップの `build_state` と一致することを毎回検証する（古い height/EMSが
     残らないことの確認）。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     positions = _grid_positions(5, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX, item_size=0.15, pitch=0.2)
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
@@ -398,7 +398,7 @@ def test_state_rebuild_hit_sequential_adds_each_step_matches_full():
 
 def test_state_rebuild_multi_add_matches_full_rebuild():
     """経路: 単一コンテナへの複数追加ヒット（2個の cache から一度に3個追加）。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     positions = _grid_positions(5, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX, item_size=0.15, pitch=0.2)
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
@@ -434,7 +434,7 @@ def test_state_rebuild_multi_add_order_independent():
     本テストを緑にできない場合は、§4.4の方針どおり増分ヒットを「1回の呼び出しにつき
     追加は最大1件」へ縮退させ、本テストは単一追加限定へ置き換える（本書と対で改定）。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     positions = _grid_positions(5, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX, item_size=0.15, pitch=0.2)
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
@@ -480,7 +480,7 @@ def test_state_rebuild_invalidate_on_drift_uses_full_rebuild():
     差分なし」と誤判定する増分実装は、旧位置に残った stale な height/EMSと新位置の
     未反映のずれを見逃すため、本アサーション（全再構築との height/EMS 一致）で検出される。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
 
@@ -508,7 +508,7 @@ def test_state_rebuild_invalidate_on_drift_uses_full_rebuild():
 
 def test_state_rebuild_invalidate_on_removal():
     """経路: 既配置の削除（件数減少）による無効化→全再構築フォールバック。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
 
@@ -533,7 +533,7 @@ def test_state_rebuild_invalidate_on_removal():
 
 def test_state_rebuild_invalidate_on_geometry_change():
     """経路: コンテナ形状変更（`geometry_key` 不一致）による無効化→全再構築フォールバック。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     item = _item(index=0, size=(0.2, 0.2, 0.2), mass=4.0, pos=(0.0, 0.0, 0.12), orn=IDENTITY_QUAT, belongs_to=0)
 
@@ -570,7 +570,7 @@ def test_container_geometry_key_distinguishes_height_buffer_split_with_identical
     """§L.5の動機となったedge case: 既存キー要素が完全一致しつつ height/buffer の内訳だけが
     異なる2コンテナで `_container_geometry_key` が異なる値を返すこと（path_mid_resting_z_rel/
     path_mid_ceiling_z_rel の差がキーに反映される）。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     inner_min = DEFAULT_INNER_MIN
     inner_max = DEFAULT_INNER_MAX
@@ -600,7 +600,7 @@ def test_container_geometry_key_distinguishes_height_buffer_split_with_identical
 def test_state_rebuild_invalidate_on_height_buffer_only_geometry_change():
     """経路: 既存キー要素が不変で height/buffer の内訳だけが変わる`geometry_key`不一致に
     よる無効化→全再構築フォールバック（§L.5、path_*拡張が無ければ誤ヒットし得たケース）。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     item = _item(index=0, size=(0.2, 0.2, 0.2), mass=4.0, pos=(0.0, 0.0, 0.12), orn=IDENTITY_QUAT, belongs_to=0)
 
@@ -628,7 +628,7 @@ def test_state_rebuild_invalidate_on_height_buffer_only_geometry_change():
 
 
 def _build_container_space_from_cdict(cdict: dict):
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     return build_container_space(cdict, index=cdict["index"], cell=CELL)
 
@@ -641,7 +641,7 @@ def test_state_rebuild_reorder_without_change_matches_full():
     追加も削除もない場合、`placed_signatures` の多重集合比較により差分ゼロと判定され、
     cache の再利用結果が全再構築と一致することを検証する。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
     item_a = _item(index=0, size=(0.15, 0.15, 0.15), mass=2.0, pos=(-0.25, 0.0, 0.095), orn=IDENTITY_QUAT, belongs_to=0)
@@ -677,7 +677,7 @@ def test_state_rebuild_duplicate_aabbs_multiset():
     追加・削除後の `build_state` との出力一致は、コード経路が正しく実行されることの
     副次的な確認として合わせて行う。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
 
@@ -724,7 +724,7 @@ def test_state_rebuild_per_container_mixed_hit_and_fallback():
     と一致することを確認し、あるコンテナの無効化が他コンテナのヒット判定に影響しないことを
     検証する。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     offsets = [0.0, 2.0, 4.0]
     specs = [(i, off, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX) for i, off in enumerate(offsets)]
@@ -769,8 +769,8 @@ def test_state_rebuild_cut_shelf_container_matches_full():
     `build_fixture_ab_cdict(shelf=True)` を用いる。
     """
     from fixtures import container_space_golden as golden
-    from src.packing_core import state
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core import state
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     init_cdict1 = golden.build_fixture_ab_cdict(index=0, spacing=0.0, shelf=True)
     obs_cdict1 = golden.build_fixture_ab_cdict(index=0, spacing=0.0, shelf=True)
@@ -806,17 +806,17 @@ def test_state_rebuild_cut_shelf_container_matches_full():
 # --- 13) 予算超過による打切り ---------------------------------------------------------
 
 def test_state_rebuild_ems_truncation_over_budget_matches_full():
-    """経路: 単一追加ヒットで候補数が `StageParams().ems_top_n_per_container`（=80）を
+    """経路: 単一追加ヒットで候補数が `StageParams().ems_top_n_per_container`（v38=220）を
     超え、`select_topn` の打切りが発生するケース。
 
-    固定シード（`np.random.default_rng(42)`）による決定論的fixtureで、9個時点では
-    EMS候補72件（打切りなし）、10個目を追加すると84件（80件選択・打切り率4/84）になる
+    固定シード（`np.random.default_rng(42)`）による決定論的fixtureで、19個時点では
+    EMS候補206件（打切りなし）、20個目を追加すると225件（220件選択・打切り率5/225）になる
     ことを作成時に確認済み。増分側の選択EMS列・打切り率が全再構築と一致することを検証する。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     rng = np.random.default_rng(42)
-    aabbs = _scattered_disjoint_aabbs(rng, 10, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)
+    aabbs = _scattered_disjoint_aabbs(rng, 20, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
 
     def _items_from_aabbs(aabb_list) -> list[dict]:
@@ -829,15 +829,15 @@ def test_state_rebuild_ems_truncation_over_budget_matches_full():
             ))
         return items
 
-    items_9 = _items_from_aabbs(aabbs[:9])
-    init_containers1, obs_containers1 = _container_lists(specs, packed_by_index={0: items_9})
+    items_19 = _items_from_aabbs(aabbs[:19])
+    init_containers1, obs_containers1 = _container_lists(specs, packed_by_index={0: items_19})
     init1 = _init(init_containers1)
     obs1 = _observation(obs_containers1, pool_list=[])
     state1, cache1 = state.build_state_cached(obs1, init1, cache=None)
-    assert state1.ems_truncation[0] == pytest.approx(0.0), "9個時点では打切りが発生しない想定"
+    assert state1.ems_truncation[0] == pytest.approx(0.0), "19個時点では打切りが発生しない想定"
 
-    items_10 = _items_from_aabbs(aabbs[:10])
-    init_containers2, obs_containers2 = _container_lists(specs, packed_by_index={0: items_10})
+    items_20 = _items_from_aabbs(aabbs[:20])
+    init_containers2, obs_containers2 = _container_lists(specs, packed_by_index={0: items_20})
     init2 = _init(init_containers2)
     obs2 = _observation(obs_containers2, pool_list=[])
 
@@ -847,7 +847,7 @@ def test_state_rebuild_ems_truncation_over_budget_matches_full():
 
     n_budget = constants.StageParams().ems_top_n_per_container
     assert len(state_full2.ems[0]) == n_budget
-    assert state_full2.ems_truncation[0] == pytest.approx(4.0 / 84.0)
+    assert state_full2.ems_truncation[0] == pytest.approx(5.0 / 225.0)
 
 
 # --- 14) キャッシュ配列の非共有・書き込み禁止 -----------------------------------------
@@ -857,7 +857,7 @@ def test_state_rebuild_cache_arrays_not_shared_and_readonly():
     メモリを共有しない独立コピーであり、`writeable=False` であることを検証する。
     返却側の height を書き換えても、cache 側の値が変化しないことを確認する。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
     item = _item(index=0, size=(0.2, 0.2, 0.2), mass=3.0, pos=(0.0, 0.0, 0.12), orn=IDENTITY_QUAT, belongs_to=0)
@@ -883,7 +883,7 @@ def test_state_rebuild_input_dicts_not_mutated():
     """`build_state_cached` は `build_state` と同じ入力非改変契約に従う（T-012契約の
     増分パスへの継承）。cache を渡した2回目の呼び出しでも observation/init が
     変更されないことを確認する。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
     item = _item(index=0, size=(0.2, 0.2, 0.2), mass=3.0, pos=(0.0, 0.0, 0.12), orn=IDENTITY_QUAT, belongs_to=0)

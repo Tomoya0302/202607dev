@@ -4,8 +4,8 @@ import dataclasses
 import numpy as np
 import pytest
 
-from src.packing_core import constants
-from src.packing_core.types import Candidate, EMSBox, ItemSpec, PlacedItem
+from agents.heuristic.packing_core import constants
+from agents.heuristic.packing_core.types import Candidate, EMSBox, ItemSpec, PlacedItem
 
 
 # --- constants.py -----------------------------------------------------------
@@ -21,13 +21,13 @@ def test_placement_params_defaults():
     assert pp.safety_margin == 0.015
     assert pp.start_z == 0.08
     assert pp.ceiling_margin == 0.018
-    assert pp.internal_extra == 0.005
+    assert pp.internal_extra == 0.001
 
 
 def test_time_params_defaults():
     tp = constants.TimeParams()
-    assert tp.policy_soft == 6.5
-    assert tp.policy_hard == 7.0
+    assert tp.policy_soft == 4.5
+    assert tp.policy_hard == 5.5
     assert tp.optimize_stop == 170.0
     assert tp.budget_poll_every == 64
 
@@ -38,16 +38,16 @@ def test_grid_params_defaults():
 
 def test_stage_params_defaults():
     sp = constants.StageParams()
-    assert sp.l_path_top_m == 64
-    # T-012確定: 各コンテナの select_topn 予算（実装詳細仕様書 §3.5/付録C）。
-    assert sp.ems_top_n_per_container == 80
+    assert sp.l_path_top_m == 160
+    # v38（submit_20260731_v38_noreserve）で確定した select_topn 予算。
+    assert sp.ems_top_n_per_container == 220
 
 
 def test_score_params_defaults():
     sp = constants.ScoreParams()
     assert sp.w_z == 1.0
-    assert sp.w_y == 0.3
-    assert sp.w_x == 0.1
+    assert sp.w_y == 0.6
+    assert sp.w_x == 0.0
     assert sp.w_support == 0.5
     assert sp.w_cg_h == 0.3
     assert sp.w_soft == 0.8

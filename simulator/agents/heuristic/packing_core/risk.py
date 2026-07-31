@@ -6,7 +6,7 @@
 """
 import math
 
-from src.packing_core.constants import ProvisionalRiskParams
+from .constants import ProvisionalRiskParams
 
 
 def provisional_p_ng(

@@ -13,13 +13,13 @@ import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
-from src.packing_core.masks import check_l_path
-from src.packing_core.types import Candidate
+from .masks import check_l_path
+from .types import Candidate
 
 if TYPE_CHECKING:
-    from src.packing_core.candidates import CandidateKey, CandidatePools
-    from src.packing_core.constants import PlacementParams, StageParams
-    from src.packing_core.state import PackingState
+    from .candidates import CandidateKey, CandidatePools
+    from .constants import PlacementParams, StageParams
+    from .state import PackingState
 
 
 class StepBudget:
@@ -89,8 +89,12 @@ Layer = Callable[["PackingState", "StepBudget"], "Candidate | None"]
 def _cache_key(cand: Candidate) -> "CandidateKey":
     """`Candidate` から L_PATHキャッシュキーを射影する（`candidates.candidate_key` と同一の
     式・順序。実行時循環importを避けるため `candidates.py` の関数はimportせずここで独立に
-    再定義する）。"""
-    return (int(cand.item_idx), int(cand.container_idx), int(cand.orientation), int(cand.ems_id))
+    再定義する）。HF-003: `anchor` を含め、同一(item,container,orientation,ems_id)でも位置の
+    異なるアンカー候補を区別する（別位置の合否を誤再利用しない）。"""
+    return (
+        int(cand.item_idx), int(cand.container_idx), int(cand.orientation),
+        int(cand.ems_id), int(cand.anchor),
+    )
 
 
 def layer1_main(
@@ -144,14 +148,35 @@ def layer1_main(
         return None
 
 
+def _best_by_stability(cands: list[Candidate]) -> Candidate | None:
+    """最も安定な候補を返す（cg_margin 最大、同点は score 最大、さらに基本順序を保持）。
+
+    HF-006: フォールバック層(layer2/3)がスコア/安定性を無視して基本順先頭を返すと、重心が
+    支持外(cg_margin<0)の候補を選び物理沈降で転倒する。合格候補の中から cg_margin（features、
+    未設定は -inf 扱い）が最大＝最も転倒しにくい候補を選ぶことで、候補集合を縮小せずに
+    （layer1・pool は不変のまま）フォールバック時のみ安定側へ寄せる。空なら None。
+    """
+    best: Candidate | None = None
+    best_key: tuple[float, float] | None = None
+    for cand in cands:
+        cg = float(cand.features.get("cg_margin", float("-inf")))
+        key = (cg, float(cand.score))
+        if best is None or key > best_key:  # type: ignore[operator]
+            best, best_key = cand, key
+    return best
+
+
 def layer2_dblf_strict(
     state: "PackingState", budget: StepBudget, *,
     pools: "CandidatePools", pp: "PlacementParams", stage_params: "StageParams",
+    prefer_stable: bool = False,
 ) -> Candidate | None:
-    """`geo_candidates` を基本順序で走査し、最初のL_PATH合格候補を返す層（§4.11）。
+    """`geo_candidates` を基本順序で走査し、L_PATH合格候補を返す層（§4.11）。
 
     layer1がまだ評価していない候補を、hard期限内に限り追加で `check_l_path` を評価する
-    （既評価分はキャッシュを再利用し重複呼出ししない）。
+    （既評価分はキャッシュを再利用し重複呼出ししない）。`prefer_stable=False`（既定）は最初の
+    合格候補を返す（従来契約）。`prefer_stable=True`（HF-006）は hard 期限内に評価した合格候補の
+    うち最も安定なもの（`_best_by_stability`）を返す＝転倒しやすい先頭候補を避ける。
 
     Args:
         state: 現在の `PackingState`。
@@ -159,14 +184,14 @@ def layer2_dblf_strict(
         pools: 候補集合（`geo_candidates`/`l_path_cache`/`path_candidates` を使用・更新）。
         pp: 配置判定パラメータ（`check_l_path` へ渡す）。
         stage_params: 本層では未使用（シグネチャ統一のため受け取る）。
+        prefer_stable: True で合格候補中の最安定を返す（HF-006）。
 
     Returns:
-        最初のL_PATH合格候補（基本順序）。候補なし・時間切れ・層内例外なら `None`。
+        合格候補（既定=基本順序先頭 / prefer_stable=最安定）。候補なし・時間切れ・例外なら `None`。
     """
     try:
-        # layer2のゲートはhard締切のみ（§4.11「hard期限内に限り、layer1のM件を超えて残りの
-        # geo_candidatesを追加評価できる」「hard超過後は新しいcheck_l_path評価を開始しない」）。
-        # soft締切はlayer1が既に使い切っている前提のため、ここでは確認しない。
+        # layer2のゲートはhard締切のみ（§4.11）。
+        passers: list[Candidate] = []
         for cand in pools.geo_candidates:
             if budget.over_hard():
                 break
@@ -179,8 +204,10 @@ def layer2_dblf_strict(
             if passed:
                 if all(cand is not c for c in pools.path_candidates):
                     pools.path_candidates.append(cand)
-                return cand
-        return None
+                if not prefer_stable:
+                    return cand
+                passers.append(cand)
+        return _best_by_stability(passers) if prefer_stable else None
     except Exception:
         return None
 
@@ -188,6 +215,7 @@ def layer2_dblf_strict(
 def layer3_first_fit(
     state: "PackingState", budget: StepBudget, *,
     pools: "CandidatePools", pp: "PlacementParams", stage_params: "StageParams",
+    prefer_stable: bool = False,
 ) -> Candidate | None:
     """新しい `check_l_path` 評価を行わず、既知のL_PATH状態で縮退選択する層
     （§4.11、HF-001でv1.27改訂）。
@@ -222,7 +250,8 @@ def layer3_first_fit(
 
         for group in (group_true, group_unknown):
             if group:
-                return group[0]
+                # HF-006: prefer_stable のとき、各群内で最も安定な候補を返す（従来は先頭）。
+                return _best_by_stability(group) if prefer_stable else group[0]
         return None
     except Exception:
         return None

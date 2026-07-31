@@ -8,10 +8,10 @@
 """
 import numpy as np
 
-from src.packing_core import geometry
-from src.packing_core.constants import EPS_GEOM
-from src.packing_core.container_space import ContainerSpace
-from src.packing_core.types import EMSBox, Vec3
+from . import geometry
+from .constants import EPS_GEOM
+from .container_space import ContainerSpace
+from .types import EMSBox, Vec3
 
 
 def _split_ems_by_obstacle(ems: EMSBox, obstacle_min: Vec3, obstacle_max: Vec3) -> list[EMSBox]:

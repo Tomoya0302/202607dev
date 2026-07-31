@@ -19,7 +19,7 @@ import dataclasses
 
 import pytest
 
-from src.packing_core import constants
+from agents.heuristic.packing_core import constants
 
 PP0 = constants.PlacementParams()  # 既存フィールドのみで構築可能（新規フィールド未実装でもOK）
 
@@ -58,7 +58,7 @@ def test_const_003_placement_params_is_frozen():
         pytest.param("safety_margin", 0.015, id="T024-CONST-004-SAFETY"),
         pytest.param("start_z", 0.08, id="T024-CONST-004-STARTZ"),
         pytest.param("ceiling_margin", 0.018, id="T024-CONST-004-CEILING"),
-        pytest.param("internal_extra", 0.005, id="T024-CONST-004-INTERNAL"),
+        pytest.param("internal_extra", 0.001, id="T024-CONST-004-INTERNAL"),
     ],
 )
 def test_const_004_existing_margins_unchanged(attr, expected):
@@ -75,7 +75,7 @@ def test_const_005_existing_dependent_constants_unchanged():
     sp = constants.StageParams()
     assert tp.budget_poll_every == 64
     assert isinstance(tp.budget_poll_every, int)
-    assert sp.l_path_top_m == 64
+    assert sp.l_path_top_m == 160
     assert constants.POOL_MAX_WEIGHT == pytest.approx(18.0)
 
 

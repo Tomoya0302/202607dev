@@ -8,7 +8,7 @@ watchdog.pyはcandidatesを一切importしないためimport順序に関わら�
 契約（§4.11）: `watchdog.py`（layer1_main〜layer4_max_pの型注釈でCandidatePools/CandidateKey
 を参照する）は `typing.TYPE_CHECKING` ブロック内でのみ candidates.py を参照する（実行時import
 はしない）。一方 `candidates.py`（enumerate_candidates/filter_candidatesがStepBudgetを参照する）
-は `from src.packing_core.watchdog import StepBudget` を通常の実行時importとして行ってよい。
+は `from agents.heuristic.packing_core.watchdog import StepBudget` を通常の実行時importとして行ってよい。
 実行時依存は candidates.py → watchdog.py の一方向のみ。
 
 source文字列（`TYPE_CHECKING`等）は検証しない。`sys.modules`を用いた新規プロセスでの
@@ -44,7 +44,7 @@ def _run_snippet(code: str) -> subprocess.CompletedProcess:
     ],
 )
 def test_import_001_both_orders_succeed(first, second):
-    code = f"import src.packing_core.{first}; import src.packing_core.{second}"
+    code = f"import agents.heuristic.packing_core.{first}; import agents.heuristic.packing_core.{second}"
     result = _run_snippet(code)
     assert result.returncode == 0, result.stderr
 
@@ -56,8 +56,8 @@ def test_import_002_candidates_imports_watchdog_at_runtime():
     """candidates.py単独importで、watchdog.pyがsys.modulesへ実際に読み込まれる
     （StepBudgetの実行時import、§4.11「候補集合の共有」で使用する契約）。"""
     code = (
-        "import src.packing_core.candidates, sys; "
-        "sys.exit(0 if 'src.packing_core.watchdog' in sys.modules else 1)"
+        "import agents.heuristic.packing_core.candidates, sys; "
+        "sys.exit(0 if 'agents.heuristic.packing_core.watchdog' in sys.modules else 1)"
     )
     result = _run_snippet(code)
     assert result.returncode == 0, (
@@ -70,8 +70,8 @@ def test_import_002_candidates_imports_watchdog_at_runtime():
 
 
 def test_import_003_candidate_pools_and_key_owned_by_candidates_not_types():
-    from src.packing_core.candidates import CandidateKey, CandidatePools
-    from src.packing_core import types as types_module
+    from agents.heuristic.packing_core.candidates import CandidateKey, CandidatePools
+    from agents.heuristic.packing_core import types as types_module
 
     assert CandidatePools is not None
     assert CandidateKey is not None
@@ -84,8 +84,8 @@ def test_import_003_candidate_pools_and_key_owned_by_candidates_not_types():
 
 def test_import_004_watchdog_alone_does_not_pull_in_candidates_at_runtime():
     code = (
-        "import src.packing_core.watchdog, sys; "
-        "sys.exit(0 if 'src.packing_core.candidates' not in sys.modules else 1)"
+        "import agents.heuristic.packing_core.watchdog, sys; "
+        "sys.exit(0 if 'agents.heuristic.packing_core.candidates' not in sys.modules else 1)"
     )
     result = _run_snippet(code)
     assert result.returncode == 0, (

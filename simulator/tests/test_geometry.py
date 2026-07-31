@@ -6,7 +6,7 @@ geometry.py は本チケット時点では未実装のため、収集(--collect-
 import numpy as np
 import pytest
 
-from src.packing_core import constants
+from agents.heuristic.packing_core import constants
 
 # 仕様 §4.1: 回転を含む比較の許容誤差は 1e-6 を使用する。
 ROT_TOL = 1e-6
@@ -26,7 +26,7 @@ ROT_TOL = 1e-6
     ],
 )
 def test_oriented_size_matches_spec_table(orientation, expected):
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     size = np.array([0.5, 0.4, 0.3], dtype=np.float64)
     result = geometry.oriented_size(size, orientation)
@@ -34,7 +34,7 @@ def test_oriented_size_matches_spec_table(orientation, expected):
 
 
 def test_oriented_size_invalid_orientation_raises():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     size = np.array([0.5, 0.4, 0.3], dtype=np.float64)
     with pytest.raises(ValueError):
@@ -44,7 +44,7 @@ def test_oriented_size_invalid_orientation_raises():
 
 
 def test_oriented_size_zero_dimension_raises():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     size = np.array([0.0, 0.4, 0.3], dtype=np.float64)
     with pytest.raises(ValueError):
@@ -52,7 +52,7 @@ def test_oriented_size_zero_dimension_raises():
 
 
 def test_oriented_size_negative_dimension_raises():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     size = np.array([-0.1, 0.4, 0.3], dtype=np.float64)
     with pytest.raises(ValueError):
@@ -62,7 +62,7 @@ def test_oriented_size_negative_dimension_raises():
 # --- aabb_from_center ------------------------------------------------------------
 
 def test_aabb_from_center_basic():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     center = np.array([1.0, 2.0, 0.5], dtype=np.float64)
     osize = np.array([0.4, 0.6, 0.2], dtype=np.float64)
@@ -72,7 +72,7 @@ def test_aabb_from_center_basic():
 
 
 def test_aabb_from_center_zero_dimension_raises():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     center = np.zeros(3, dtype=np.float64)
     osize = np.array([0.0, 0.6, 0.2], dtype=np.float64)
@@ -81,7 +81,7 @@ def test_aabb_from_center_zero_dimension_raises():
 
 
 def test_aabb_from_center_negative_dimension_raises():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     center = np.zeros(3, dtype=np.float64)
     osize = np.array([-0.1, 0.6, 0.2], dtype=np.float64)
@@ -92,7 +92,7 @@ def test_aabb_from_center_negative_dimension_raises():
 # --- aabb_intersects --------------------------------------------------------------
 
 def test_aabb_intersects_clear_overlap_true():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     amin, amax = np.array([0.0, 0.0, 0.0]), np.array([1.0, 1.0, 1.0])
     bmin, bmax = np.array([0.5, 0.5, 0.5]), np.array([1.5, 1.5, 1.5])
@@ -100,7 +100,7 @@ def test_aabb_intersects_clear_overlap_true():
 
 
 def test_aabb_intersects_clear_separation_false():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     amin, amax = np.array([0.0, 0.0, 0.0]), np.array([1.0, 1.0, 1.0])
     bmin, bmax = np.array([2.0, 2.0, 2.0]), np.array([3.0, 3.0, 3.0])
@@ -109,7 +109,7 @@ def test_aabb_intersects_clear_separation_false():
 
 def test_aabb_intersects_face_touching_false():
     # 仕様 §4.1 のテスト例: [0,1]^3 と [1,2]x[0,1]^2 は面接触のみで交差ではない（tol=0）。
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     amin, amax = np.array([0.0, 0.0, 0.0]), np.array([1.0, 1.0, 1.0])
     bmin, bmax = np.array([1.0, 0.0, 0.0]), np.array([2.0, 1.0, 1.0])
@@ -117,12 +117,12 @@ def test_aabb_intersects_face_touching_false():
 
 
 def test_aabb_intersects_negative_tol_treats_small_gap_as_overlap():
-    # §4.5 check_overlap の用法: tol=-internal_extra のとき、internal_extra(5mm) 未満の
-    # 隙間は交差(重なり)とみなされる（厳格側）。ここでは 3mm の隙間 < internal_extra=5mm。
-    from src.packing_core import geometry
+    # §4.5 check_overlap の用法: tol=-internal_extra のとき、internal_extra(v38=1mm) 未満の
+    # 隙間は交差(重なり)とみなされる（厳格側）。ここでは 0.5mm の隙間 < internal_extra=1mm。
+    from agents.heuristic.packing_core import geometry
 
     amin, amax = np.array([0.0, 0.0, 0.0]), np.array([1.0, 1.0, 1.0])
-    bmin, bmax = np.array([1.003, 0.0, 0.0]), np.array([2.003, 1.0, 1.0])
+    bmin, bmax = np.array([1.0005, 0.0, 0.0]), np.array([2.0005, 1.0, 1.0])
     assert not geometry.aabb_intersects(amin, amax, bmin, bmax, tol=0.0)
     internal_extra = constants.PlacementParams().internal_extra
     assert geometry.aabb_intersects(amin, amax, bmin, bmax, tol=-internal_extra)
@@ -131,7 +131,7 @@ def test_aabb_intersects_negative_tol_treats_small_gap_as_overlap():
 def test_aabb_intersects_positive_tol_ignores_small_overlap():
     # 判定式 (amin < bmax - tol) から導かれる挙動: 正の tol は tol 未満のわずかな重なりを
     # 非交差とみなす（tol=0 では重なりとして検出される 3mm の重なりが tol=5mm で消える）。
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     amin, amax = np.array([0.0, 0.0, 0.0]), np.array([1.0, 1.0, 1.0])
     bmin, bmax = np.array([0.997, 0.0, 0.0]), np.array([1.997, 1.0, 1.0])
@@ -142,7 +142,7 @@ def test_aabb_intersects_positive_tol_ignores_small_overlap():
 # --- aabb_contains --------------------------------------------------------------
 
 def test_aabb_contains_normal_case_true():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     outer_min, outer_max = np.array([0.0, 0.0, 0.0]), np.array([2.0, 2.0, 2.0])
     inner_min, inner_max = np.array([0.5, 0.5, 0.5]), np.array([1.5, 1.5, 1.5])
@@ -150,7 +150,7 @@ def test_aabb_contains_normal_case_true():
 
 
 def test_aabb_contains_outside_false():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     outer_min, outer_max = np.array([0.0, 0.0, 0.0]), np.array([2.0, 2.0, 2.0])
     inner_min, inner_max = np.array([0.5, 0.5, 0.5]), np.array([2.5, 1.5, 1.5])
@@ -159,7 +159,7 @@ def test_aabb_contains_outside_false():
 
 def test_aabb_contains_positive_margin_stricter():
     # margin>0 は outer を margin 分だけ縮める（厳格化）。
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     outer_min, outer_max = np.array([0.0, 0.0, 0.0]), np.array([2.0, 2.0, 2.0])
     inner_min, inner_max = np.array([0.05, 0.05, 0.05]), np.array([1.95, 1.95, 1.95])
@@ -169,7 +169,7 @@ def test_aabb_contains_positive_margin_stricter():
 
 def test_aabb_contains_negative_margin_relaxed():
     # margin<0 は outer を |margin| 分だけ拡大する（緩和）。
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     outer_min, outer_max = np.array([0.0, 0.0, 0.0]), np.array([2.0, 2.0, 2.0])
     inner_min, inner_max = np.array([-0.1, -0.1, -0.1]), np.array([2.1, 2.1, 2.1])
@@ -180,7 +180,7 @@ def test_aabb_contains_negative_margin_relaxed():
 # --- quat_to_matrix ---------------------------------------------------------------
 
 def test_quat_to_matrix_identity():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     q = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
     result = geometry.quat_to_matrix(q)
@@ -190,7 +190,7 @@ def test_quat_to_matrix_identity():
 def test_quat_to_matrix_z90():
     # 公式 utils.ORNS[3]=[0,0,pi/2] を getQuaternionFromEuler した値
     # (0,0,0.7071068,0.7071068) に対応（interface_notes.md 読解・手計算で突合済み）。
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     q = np.array([0.0, 0.0, 0.7071068, 0.7071068], dtype=np.float64)
     expected = np.array(
@@ -205,7 +205,7 @@ def test_quat_to_matrix_z90():
 
 
 def test_quat_to_matrix_non_unit_normalizes():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     q_unit = np.array([0.0, 0.0, 0.7071068, 0.7071068], dtype=np.float64)
     q_scaled = q_unit * 2.0
@@ -217,7 +217,7 @@ def test_quat_to_matrix_non_unit_normalizes():
 # --- rotated_aabb ------------------------------------------------------------------
 
 def test_rotated_aabb_identity_matches_aabb_from_center():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     center = np.array([1.0, 2.0, 0.5], dtype=np.float64)
     size = np.array([0.5, 0.4, 0.3], dtype=np.float64)
@@ -230,7 +230,7 @@ def test_rotated_aabb_identity_matches_aabb_from_center():
 
 
 def test_rotated_aabb_z90_dims():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     center = np.array([1.0, 2.0, 0.5], dtype=np.float64)
     size = np.array([0.5, 0.4, 0.3], dtype=np.float64)
@@ -244,7 +244,7 @@ def test_rotated_aabb_z90_dims():
 
 
 def test_rotated_aabb_zero_dimension_raises():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     center = np.zeros(3, dtype=np.float64)
     size = np.array([0.0, 0.4, 0.3], dtype=np.float64)
@@ -254,7 +254,7 @@ def test_rotated_aabb_zero_dimension_raises():
 
 
 def test_rotated_aabb_negative_dimension_raises():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     center = np.zeros(3, dtype=np.float64)
     size = np.array([-0.1, 0.4, 0.3], dtype=np.float64)
@@ -266,7 +266,7 @@ def test_rotated_aabb_negative_dimension_raises():
 # --- inflate -----------------------------------------------------------------------
 
 def test_inflate_positive_delta_expands():
-    from src.packing_core import geometry
+    from agents.heuristic.packing_core import geometry
 
     bmin = np.array([0.0, 0.0, 0.0], dtype=np.float64)
     bmax = np.array([1.0, 1.0, 1.0], dtype=np.float64)

@@ -32,7 +32,8 @@ import pytest
 
 SIMULATOR_ROOT = Path(__file__).resolve().parent.parent
 REAL_AGENT_DIR = SIMULATOR_ROOT / "agents" / "heuristic"
-REAL_CORE_DIR = SIMULATOR_ROOT / "src" / "packing_core"
+# v38 consolidated layout: the runtime core lives beside the agent (nested), not under src/.
+REAL_CORE_DIR = SIMULATOR_ROOT / "agents" / "heuristic" / "packing_core"
 
 CORE_FILES = (
     "__init__.py",
@@ -41,8 +42,11 @@ CORE_FILES = (
     "container_space.py",
     "ems.py",
     "geometry.py",
+    "heightmap.py",
     "masks.py",
+    "order.py",
     "risk.py",
+    "rollout_plan.py",
     "score.py",
     "stability.py",
     "state.py",
@@ -61,8 +65,11 @@ EXPECTED_ENTRIES = (
     "heuristic/packing_core/container_space.py",
     "heuristic/packing_core/ems.py",
     "heuristic/packing_core/geometry.py",
+    "heuristic/packing_core/heightmap.py",
     "heuristic/packing_core/masks.py",
+    "heuristic/packing_core/order.py",
     "heuristic/packing_core/risk.py",
+    "heuristic/packing_core/rollout_plan.py",
     "heuristic/packing_core/score.py",
     "heuristic/packing_core/stability.py",
     "heuristic/packing_core/state.py",
@@ -844,7 +851,7 @@ def test_zip_has_exact_order_safe_paths_metadata_crc_and_utf8_lf(tmp_path):
         infos = archive.infolist()
         names = tuple(info.filename for info in infos)
         assert names == EXPECTED_ENTRIES
-        assert len(names) == len(set(names)) == 17
+        assert len(names) == len(set(names)) == 20
         assert archive.comment == b""
         assert archive.testzip() is None
         for info in infos:

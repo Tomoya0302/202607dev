@@ -8,9 +8,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from src.packing_core import geometry
-from src.packing_core.constants import EPS_GEOM
-from src.packing_core.types import PlacedItem, Vec3
+from . import geometry
+from .constants import EPS_GEOM
+from .types import PlacedItem, Vec3
 
 
 @dataclass
@@ -65,6 +65,7 @@ class ContainerSpace:
     path_mid_resting_z_rel: float
     path_mid_ceiling_z_rel: float
     path_obstacle_boxes_rel: tuple[tuple[Vec3, Vec3], ...]
+    is_prioritized: bool = False  # HF-012 H2: 優先手荷物用コンテナか（placement_score 用、既定 False）
 
 
 def _axis_alignment(normal_rel: np.ndarray) -> tuple[int, float] | None:
@@ -341,6 +342,7 @@ def build_container_space(cdict: dict, index: int, cell: float) -> ContainerSpac
         path_mid_resting_z_rel=path_mid_resting_z_rel,
         path_mid_ceiling_z_rel=path_mid_ceiling_z_rel,
         path_obstacle_boxes_rel=path_obstacle_boxes_rel,
+        is_prioritized=bool(cdict.get("is_prioritized", False)),
     )
 
 
@@ -468,13 +470,21 @@ def cells_of_aabb(
     if np.any(clipped_max <= clipped_min):
         return slice(0, 0), slice(0, 0)
 
-    _, _, xs, ys = _cell_centers(space.inner_min_rel, space.inner_max_rel, space.cell)
-    nx, ny = space.height.shape
+    # セル中心配列は容器で不変なので初回だけ計算してキャッシュ（cells_of_aabb は support 判定
+    # で1手あたり数千回呼ばれるため、_cell_centers の arange 再生成が支配的だった）。
+    xs = getattr(space, "_xs_cells", None)
+    if xs is None:
+        _, _, xs, ys = _cell_centers(space.inner_min_rel, space.inner_max_rel, space.cell)
+        space._xs_cells = xs
+        space._ys_cells = ys
+    else:
+        ys = space._ys_cells
 
-    x_start = int(np.clip(np.searchsorted(xs, clipped_min[0], side="left"), 0, nx))
-    x_stop = int(np.clip(np.searchsorted(xs, clipped_max[0], side="left"), 0, nx))
-    y_start = int(np.clip(np.searchsorted(ys, clipped_min[1], side="left"), 0, ny))
-    y_stop = int(np.clip(np.searchsorted(ys, clipped_max[1], side="left"), 0, ny))
+    # searchsorted は [0, len(xs)]=[0, nx] を返し len(xs)==height.shape[0] なので clip は冗長。
+    x_start = int(np.searchsorted(xs, clipped_min[0], side="left"))
+    x_stop = int(np.searchsorted(xs, clipped_max[0], side="left"))
+    y_start = int(np.searchsorted(ys, clipped_min[1], side="left"))
+    y_stop = int(np.searchsorted(ys, clipped_max[1], side="left"))
 
     if x_start >= x_stop or y_start >= y_stop:
         return slice(0, 0), slice(0, 0)

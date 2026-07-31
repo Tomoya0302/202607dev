@@ -21,7 +21,7 @@ import math
 
 import pytest
 
-from src.packing_core import constants
+from agents.heuristic.packing_core import constants
 
 
 def _rp(**overrides):
@@ -29,7 +29,7 @@ def _rp(**overrides):
 
 
 def _p_ng(support_ratio, cg_margin, params=None):
-    from src.packing_core.risk import provisional_p_ng
+    from agents.heuristic.packing_core.risk import provisional_p_ng
     return provisional_p_ng(support_ratio=support_ratio, cg_margin=cg_margin, params=params or _rp())
 
 

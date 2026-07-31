@@ -23,7 +23,7 @@ import functools
 import numpy as np
 import pytest
 
-from src.packing_core.types import Candidate
+from agents.heuristic.packing_core.types import Candidate
 
 
 def _cand(tag=0):
@@ -65,7 +65,7 @@ def _dummy_state():
 
 
 def _dummy_budget():
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.watchdog import StepBudget
     return StepBudget(t0=0.0, soft=1e6, hard=2e6, now_fn=lambda: 0.0)
 
 
@@ -73,7 +73,7 @@ def _dummy_budget():
 
 
 def test_safe_001_layers_called_in_order_1_to_4():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     calls = []
     layers = [
@@ -102,7 +102,7 @@ def test_safe_001_layers_called_in_order_1_to_4():
     ],
 )
 def test_safe_002_early_confirmation_skips_remaining_layers(k):
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     calls = []
     winner = _cand(tag=99)
@@ -126,7 +126,7 @@ def test_safe_002_early_confirmation_skips_remaining_layers(k):
 
 
 def test_safe_003_all_none_returns_none():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     layers = [_layer_returns(None) for _ in range(4)]
     result = safe_decide(layers, _dummy_state(), _dummy_budget(), {})
@@ -137,7 +137,7 @@ def test_safe_003_all_none_returns_none():
 
 
 def test_safe_004_exception_in_one_layer_does_not_stop_next_layer():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     winner = _cand(tag=7)
     layers = [
@@ -154,7 +154,7 @@ def test_safe_004_exception_in_one_layer_does_not_stop_next_layer():
 
 
 def test_safe_005_all_layers_raise_returns_none():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     layers = [_layer_raises(RuntimeError(f"boom{i}")) for i in range(4)]
     result = safe_decide(layers, _dummy_state(), _dummy_budget(), {})
@@ -165,7 +165,7 @@ def test_safe_005_all_layers_raise_returns_none():
 
 
 def test_safe_006_exceptions_do_not_propagate_out_of_safe_decide():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     layers = [
         _layer_raises(ValueError("a")),
@@ -194,7 +194,7 @@ def test_safe_006_exceptions_do_not_propagate_out_of_safe_decide():
     ],
 )
 def test_safe_007_decided_layer_telemetry(k, expected):
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     if k is None:
         layers = [_layer_returns(None) for _ in range(4)]
@@ -212,7 +212,7 @@ def test_safe_007_decided_layer_telemetry(k, expected):
 
 
 def test_safe_008_initializes_telemetry_keys_via_setdefault():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     layers = [_layer_returns(None) for _ in range(4)]
     telemetry = {}
@@ -226,7 +226,7 @@ def test_safe_008_initializes_telemetry_keys_via_setdefault():
 
 
 def test_safe_009_layer_error_shape_excludes_message_and_traceback():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     layers = [
         _layer_returns(None),
@@ -247,7 +247,7 @@ def test_safe_009_layer_error_shape_excludes_message_and_traceback():
 
 
 def test_safe_010_all_layers_receive_the_same_state_object():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     recorded = []
     layers = [_layer_records_args(recorded, ret=None) for _ in range(4)]
@@ -262,7 +262,7 @@ def test_safe_010_all_layers_receive_the_same_state_object():
 
 
 def test_safe_011_all_layers_receive_the_same_budget_object():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     recorded = []
     layers = [_layer_records_args(recorded, ret=None) for _ in range(4)]
@@ -277,9 +277,9 @@ def test_safe_011_all_layers_receive_the_same_budget_object():
 
 
 def test_safe_012_does_not_call_make_action(monkeypatch):
-    from src.packing_core import state as state_module
-    from src.packing_core import watchdog
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core import state as state_module
+    from agents.heuristic.packing_core import watchdog
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     calls = []
     monkeypatch.setattr(state_module, "make_action", lambda *a, **k: calls.append(1), raising=False)
@@ -295,7 +295,7 @@ def test_safe_012_does_not_call_make_action(monkeypatch):
 
 
 def test_safe_013_does_not_mutate_returned_candidate():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     winner = _cand(tag=42)
     winner.score = 0.75
@@ -315,7 +315,7 @@ def test_safe_013_does_not_mutate_returned_candidate():
 
 
 def test_safe_014_preexisting_telemetry_values_not_overwritten():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     layers = [_layer_returns(None) for _ in range(4)]  # 全層None（確定しない）
     telemetry = {"decided_layer": 5, "layer_error": ["preexisting"]}
@@ -330,7 +330,7 @@ def test_safe_014_preexisting_telemetry_values_not_overwritten():
 
 
 def test_safe_015_accepts_functools_partial_layers_regardless_of_binding_order():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     def _base(state, budget, *, tag, extra=None):
         return _cand(tag=tag)
@@ -353,7 +353,7 @@ def test_safe_015_accepts_functools_partial_layers_regardless_of_binding_order()
 
 
 def test_safe_016_no_layer_error_entries_for_layers_after_early_confirmation():
-    from src.packing_core.watchdog import safe_decide
+    from agents.heuristic.packing_core.watchdog import safe_decide
 
     winner = _cand(tag=1)
     layers = [

@@ -17,15 +17,15 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from src.packing_core.constants import EPS_GEOM, TOL_CONTACT
-from src.packing_core.container_space import cells_of_aabb
-from src.packing_core.geometry import aabb_from_center
-from src.packing_core.types import Candidate
+from .constants import EPS_GEOM, TOL_CONTACT
+from .container_space import cells_of_aabb
+from .geometry import aabb_from_center
+from .types import Candidate
 
 if TYPE_CHECKING:
     # 循環import回避（state.py は本モジュールをimportしないが、逆方向の実行時依存を
     # 作らないよう型チェック専用importに留める。masks.py と同方針）。
-    from src.packing_core.state import PackingState
+    from .state import PackingState
 
 
 def expected_settled_pos_rel(state: "PackingState", cand: Candidate) -> np.ndarray:

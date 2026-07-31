@@ -47,11 +47,11 @@ from pathlib import Path
 
 import numpy as np
 
-from src.packing_core import geometry
-from src.packing_core.constants import EPS_GEOM, PlacementParams
-from src.packing_core.masks import MaskStage, evaluate_stage
-from src.packing_core.state import PackingState, build_state
-from src.packing_core.types import Candidate
+from agents.heuristic.packing_core import geometry
+from agents.heuristic.packing_core.constants import EPS_GEOM, PlacementParams
+from agents.heuristic.packing_core.masks import MaskStage, evaluate_stage
+from agents.heuristic.packing_core.state import PackingState, build_state
+from agents.heuristic.packing_core.types import Candidate
 
 logger = logging.getLogger("packing")
 
@@ -963,9 +963,9 @@ def build_report(
     lines.append(f"- Git HEAD: `{git_head}`")
     # 3-5. ハッシュ
     lines.append(f"- `scripts/parity_report.py` SHA-256: `{script_sha256}`")
-    lines.append(f"- `src/packing_core/masks.py` git blob SHA-1: `{masks_blob_sha1}`")
-    lines.append(f"- `src/packing_core/masks.py` SHA-256: `{masks_sha256}`")
-    lines.append(f"- `src/packing_core/constants.py` SHA-256: `{constants_sha256}`")
+    lines.append(f"- `agents/heuristic/packing_core/masks.py` git blob SHA-1: `{masks_blob_sha1}`")
+    lines.append(f"- `agents/heuristic/packing_core/masks.py` SHA-256: `{masks_sha256}`")
+    lines.append(f"- `agents/heuristic/packing_core/constants.py` SHA-256: `{constants_sha256}`")
     # 6. 入力
     lines.append(f"- 入力 `geo_verdicts.jsonl` パス: `{input_path_display}`")
     lines.append(f"- 入力 `geo_verdicts.jsonl` SHA-256: `{input_sha256}`")

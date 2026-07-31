@@ -7,10 +7,10 @@
 """
 import math
 
-from src.packing_core import constants
-from src.packing_core.constants import ScoreParams
-from src.packing_core.stability import expected_settled_pos_rel, soft_below_ratio, support_ratio
-from src.packing_core.types import Candidate
+from . import constants
+from .constants import ScoreParams
+from .stability import expected_settled_pos_rel, soft_below_ratio, support_ratio
+from .types import Candidate
 
 
 def _require_finite(value: float, label: str) -> None:

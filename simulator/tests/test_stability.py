@@ -34,10 +34,10 @@ fixture: 軸整列直方体コンテナ（cut_x=cut_y=0、shelf=False）。
 import numpy as np
 import pytest
 
-from src.packing_core import constants
-from src.packing_core.container_space import bake_placed, build_container_space
-from src.packing_core.state import PackingState
-from src.packing_core.types import Candidate, EMSBox, PlacedItem
+from agents.heuristic.packing_core import constants
+from agents.heuristic.packing_core.container_space import bake_placed, build_container_space
+from agents.heuristic.packing_core.state import PackingState
+from agents.heuristic.packing_core.types import Candidate, EMSBox, PlacedItem
 
 TOL_CONTACT = constants.TOL_CONTACT
 EPS_GEOM = constants.EPS_GEOM
@@ -172,7 +172,7 @@ def _register_ems(state: PackingState, cand: Candidate) -> None:
 # --- support_ratio ---------------------------------------------------------
 
 def test_support_ratio_flat_floor_is_one():
-    from src.packing_core.stability import support_ratio
+    from agents.heuristic.packing_core.stability import support_ratio
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
@@ -181,7 +181,7 @@ def test_support_ratio_flat_floor_is_one():
 
 
 def test_support_ratio_half_on_platform_is_half():
-    from src.packing_core.stability import support_ratio
+    from agents.heuristic.packing_core.stability import support_ratio
 
     platform = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30)
     state = _state_with_placed([platform])
@@ -191,7 +191,7 @@ def test_support_ratio_half_on_platform_is_half():
 
 
 def test_support_ratio_floating_is_zero():
-    from src.packing_core.stability import support_ratio
+    from agents.heuristic.packing_core.stability import support_ratio
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=0.50)
@@ -200,7 +200,7 @@ def test_support_ratio_floating_is_zero():
 
 
 def test_support_ratio_outside_footprint_is_zero():
-    from src.packing_core.stability import support_ratio
+    from agents.heuristic.packing_core.stability import support_ratio
 
     state = _state_with_placed([])
     cand = _candidate(x=10.0, bottom_z=FLOOR_Z)
@@ -209,7 +209,7 @@ def test_support_ratio_outside_footprint_is_zero():
 
 
 def test_support_ratio_tol_contact_boundary():
-    from src.packing_core.stability import support_ratio
+    from agents.heuristic.packing_core.stability import support_ratio
 
     platform = _placed_item(-0.4, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30)
     state = _state_with_placed([platform])
@@ -224,7 +224,7 @@ def test_support_ratio_tol_contact_boundary():
 
 
 def test_support_ratio_return_type_is_float_and_bounded():
-    from src.packing_core.stability import support_ratio
+    from agents.heuristic.packing_core.stability import support_ratio
 
     platform = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30)
     state = _state_with_placed([platform])
@@ -239,7 +239,7 @@ def test_support_ratio_return_type_is_float_and_bounded():
 # --- max_step_below ----------------------------------------------------------
 
 def test_max_step_below_flat_is_zero():
-    from src.packing_core.stability import max_step_below
+    from agents.heuristic.packing_core.stability import max_step_below
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
@@ -248,7 +248,7 @@ def test_max_step_below_flat_is_zero():
 
 
 def test_max_step_below_platform_step_includes_nonsupport():
-    from src.packing_core.stability import max_step_below
+    from agents.heuristic.packing_core.stability import max_step_below
 
     platform = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30)
     state = _state_with_placed([platform])
@@ -259,7 +259,7 @@ def test_max_step_below_platform_step_includes_nonsupport():
 
 
 def test_max_step_below_empty_footprint_is_zero():
-    from src.packing_core.stability import max_step_below
+    from agents.heuristic.packing_core.stability import max_step_below
 
     state = _state_with_placed([])
     cand = _candidate(x=10.0, bottom_z=FLOOR_Z)
@@ -268,7 +268,7 @@ def test_max_step_below_empty_footprint_is_zero():
 
 
 def test_max_step_below_is_nonnegative_float():
-    from src.packing_core.stability import max_step_below
+    from agents.heuristic.packing_core.stability import max_step_below
 
     platform = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30)
     state = _state_with_placed([platform])
@@ -282,7 +282,7 @@ def test_max_step_below_is_nonnegative_float():
 # --- soft_below_ratio ----------------------------------------------------------
 
 def test_soft_below_ratio_all_soft_is_one():
-    from src.packing_core.stability import soft_below_ratio
+    from agents.heuristic.packing_core.stability import soft_below_ratio
 
     soft = _placed_item(-0.4, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=True)
     state = _state_with_placed([soft])
@@ -292,7 +292,7 @@ def test_soft_below_ratio_all_soft_is_one():
 
 
 def test_soft_below_ratio_half_soft_half_hard_is_half():
-    from src.packing_core.stability import soft_below_ratio
+    from agents.heuristic.packing_core.stability import soft_below_ratio
 
     soft = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=True)
     hard = _placed_item(0.0, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=False)
@@ -303,7 +303,7 @@ def test_soft_below_ratio_half_soft_half_hard_is_half():
 
 
 def test_soft_below_ratio_half_floor_half_soft_is_half():
-    from src.packing_core.stability import soft_below_ratio
+    from agents.heuristic.packing_core.stability import soft_below_ratio
 
     soft_top_z = FLOOR_Z + 0.8 * TOL_CONTACT
     soft = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=FLOOR_Z, z_top=soft_top_z, is_soft=True)
@@ -317,7 +317,7 @@ def test_soft_below_ratio_half_floor_half_soft_is_half():
 
 
 def test_soft_below_ratio_hard_only_is_zero():
-    from src.packing_core.stability import soft_below_ratio
+    from agents.heuristic.packing_core.stability import soft_below_ratio
 
     hard = _placed_item(-0.4, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=False)
     state = _state_with_placed([hard])
@@ -327,7 +327,7 @@ def test_soft_below_ratio_hard_only_is_zero():
 
 
 def test_soft_below_ratio_no_support_is_zero():
-    from src.packing_core.stability import soft_below_ratio
+    from agents.heuristic.packing_core.stability import soft_below_ratio
 
     soft = _placed_item(-0.4, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=True)
     state = _state_with_placed([soft])
@@ -337,7 +337,7 @@ def test_soft_below_ratio_no_support_is_zero():
 
 
 def test_soft_below_ratio_tie_soft_and_hard_counts_soft():
-    from src.packing_core.stability import soft_below_ratio
+    from agents.heuristic.packing_core.stability import soft_below_ratio
 
     # §4.6の退化ケース: 同一最上面(z=0.30)にソフト・ハードが並存 → 保守側にソフトとして数える。
     soft = _placed_item(-0.4, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=True)
@@ -349,7 +349,7 @@ def test_soft_below_ratio_tie_soft_and_hard_counts_soft():
 
 
 def test_soft_below_ratio_soft_below_top_not_counted():
-    from src.packing_core.stability import soft_below_ratio
+    from agents.heuristic.packing_core.stability import soft_below_ratio
 
     # ソフト(z=[0.02,0.20])の上にハード(z=[0.20,0.30])を体積非重複で物理的に積み重ねる。
     # space.heightを形成する最上面はハードのため、ソフトは支持として数えない。
@@ -362,7 +362,7 @@ def test_soft_below_ratio_soft_below_top_not_counted():
 
 
 def test_soft_below_ratio_return_type_is_float_and_bounded():
-    from src.packing_core.stability import soft_below_ratio
+    from agents.heuristic.packing_core.stability import soft_below_ratio
 
     soft = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=True)
     hard = _placed_item(0.0, 0.4, -0.4, 0.4, z_bottom=0.02, z_top=0.30, is_soft=False)
@@ -378,7 +378,7 @@ def test_soft_below_ratio_return_type_is_float_and_bounded():
 # --- container_idx 検証（3公開関数共通の _footprint 契約。代表関数で検証） -----------------
 
 def test_container_idx_negative_raises_value_error():
-    from src.packing_core.stability import support_ratio
+    from agents.heuristic.packing_core.stability import support_ratio
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z, container_idx=-1)
@@ -388,7 +388,7 @@ def test_container_idx_negative_raises_value_error():
 
 
 def test_container_idx_out_of_range_raises_value_error():
-    from src.packing_core.stability import support_ratio
+    from agents.heuristic.packing_core.stability import support_ratio
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z, container_idx=len(state.containers))
@@ -403,7 +403,7 @@ def test_container_idx_out_of_range_raises_value_error():
 # したもの）の全頂点の凸包。セル「中心点」のみの凸包ではない。
 
 def test_support_polygon_flat_floor_matches_candidate_boundary():
-    from src.packing_core.stability import support_polygon
+    from agents.heuristic.packing_core.stability import support_polygon
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
@@ -416,7 +416,7 @@ def test_support_polygon_flat_floor_matches_candidate_boundary():
 
 
 def test_support_polygon_no_support_is_empty_shape():
-    from src.packing_core.stability import support_polygon
+    from agents.heuristic.packing_core.stability import support_polygon
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=0.50)  # 浮遊、支持0件
@@ -427,7 +427,7 @@ def test_support_polygon_no_support_is_empty_shape():
 
 
 def test_support_polygon_single_supported_cell_returns_intersection_rectangle():
-    from src.packing_core.stability import support_polygon
+    from agents.heuristic.packing_core.stability import support_polygon
 
     # セル(0,0)（生矩形 x:[-0.4,-0.38], y:[-0.4,-0.38]）だけを支持する小さな台。
     platform = _placed_item(-0.4, -0.38, -0.4, -0.38, z_bottom=FLOOR_Z, z_top=0.05)
@@ -443,7 +443,7 @@ def test_support_polygon_single_supported_cell_returns_intersection_rectangle():
 
 
 def test_support_polygon_clips_to_candidate_footprint_when_off_grid():
-    from src.packing_core.stability import support_polygon
+    from agents.heuristic.packing_core.stability import support_polygon
 
     # 候補中心を格子に対して非整列（x=0.011）にしても、支持パッチは候補底面AABBの外へ出ない。
     state = _state_with_placed([])
@@ -459,7 +459,7 @@ def test_support_polygon_clips_to_candidate_footprint_when_off_grid():
 
 
 def test_support_polygon_clips_to_container_inner_wall():
-    from src.packing_core.stability import support_polygon
+    from agents.heuristic.packing_core.stability import support_polygon
 
     # 候補底面が内壁(x<=0.4)をまたぐ配置（中心x=0.39→amax_x=0.59>0.4）。支持セル自体は
     # cells_of_aabb がセル中心で内壁clampする一方、セル「生矩形」は内壁を越え得るため、
@@ -475,7 +475,7 @@ def test_support_polygon_clips_to_container_inner_wall():
 
 
 def test_support_polygon_is_counterclockwise():
-    from src.packing_core.stability import support_polygon
+    from agents.heuristic.packing_core.stability import support_polygon
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
@@ -488,7 +488,7 @@ def test_support_polygon_is_counterclockwise():
 
 
 def test_support_polygon_lexicographically_smallest_vertex_first():
-    from src.packing_core.stability import support_polygon
+    from agents.heuristic.packing_core.stability import support_polygon
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
@@ -500,7 +500,7 @@ def test_support_polygon_lexicographically_smallest_vertex_first():
 
 
 def test_support_polygon_first_vertex_not_duplicated_at_end():
-    from src.packing_core.stability import support_polygon
+    from agents.heuristic.packing_core.stability import support_polygon
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
@@ -510,7 +510,7 @@ def test_support_polygon_first_vertex_not_duplicated_at_end():
 
 
 def test_support_polygon_dtype_and_shape_contract():
-    from src.packing_core.stability import support_polygon
+    from agents.heuristic.packing_core.stability import support_polygon
 
     state = _state_with_placed([])
     for bottom_z in (FLOOR_Z, 0.50):  # 支持あり／支持0件の両方
@@ -523,7 +523,7 @@ def test_support_polygon_dtype_and_shape_contract():
 
 
 def test_support_polygon_independent_of_placed_list_order():
-    from src.packing_core.stability import support_polygon
+    from agents.heuristic.packing_core.stability import support_polygon
 
     plat_a = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=FLOOR_Z, z_top=0.10)
     plat_b = _placed_item(0.0, 0.4, -0.4, 0.4, z_bottom=FLOOR_Z, z_top=0.30)
@@ -541,7 +541,7 @@ def test_support_polygon_independent_of_placed_list_order():
 # --- T-021: _convex_hull（private helper。重複点・共線点除去を合成入力で直接検証） ----------
 
 def test_convex_hull_removes_duplicate_points():
-    from src.packing_core.stability import _convex_hull
+    from agents.heuristic.packing_core.stability import _convex_hull
 
     pts = np.array(
         [[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]],
@@ -555,7 +555,7 @@ def test_convex_hull_removes_duplicate_points():
 
 
 def test_convex_hull_removes_collinear_midpoints():
-    from src.packing_core.stability import _convex_hull
+    from agents.heuristic.packing_core.stability import _convex_hull
 
     # ユーザー確定の合成入力：正の面積を持つ支持パッチからは通常発生しない縮退ケースを
     # _convex_hull へ直接合成点で検証する（ゼロ幅Candidateやゼロ面積セルは作らない）。
@@ -568,7 +568,7 @@ def test_convex_hull_removes_collinear_midpoints():
 
 
 def test_convex_hull_empty_and_single_point_shapes():
-    from src.packing_core.stability import _convex_hull
+    from agents.heuristic.packing_core.stability import _convex_hull
 
     empty = _convex_hull(np.empty((0, 2), dtype=np.float64))
     assert empty.shape == (0, 2)
@@ -582,7 +582,7 @@ def test_convex_hull_empty_and_single_point_shapes():
 # --- T-021: cg_margin --------------------------------------------------------
 
 def test_cg_margin_flat_floor_is_half_min_osize():
-    from src.packing_core.stability import cg_margin
+    from agents.heuristic.packing_core.stability import cg_margin
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)
@@ -592,7 +592,7 @@ def test_cg_margin_flat_floor_is_half_min_osize():
 
 
 def test_cg_margin_half_support_is_near_zero_boundary():
-    from src.packing_core.stability import cg_margin
+    from agents.heuristic.packing_core.stability import cg_margin
 
     platform = _placed_item(-0.4, 0.0, -0.4, 0.4, z_bottom=FLOOR_Z, z_top=0.30)
     state = _state_with_placed([platform])
@@ -602,7 +602,7 @@ def test_cg_margin_half_support_is_near_zero_boundary():
 
 
 def test_cg_margin_outside_support_hull_is_negative():
-    from src.packing_core.stability import cg_margin
+    from agents.heuristic.packing_core.stability import cg_margin
 
     # 台が候補中心(0,0)を覆わない位置（x:[-0.4,-0.1]）にあり、候補中心はhull外側になる。
     platform = _placed_item(-0.4, -0.1, -0.4, 0.4, z_bottom=FLOOR_Z, z_top=0.30)
@@ -615,7 +615,7 @@ def test_cg_margin_outside_support_hull_is_negative():
 
 
 def test_cg_margin_k_less_than_3_is_negative_infinity_synthetic():
-    from src.packing_core.stability import _cg_margin_from_polygon
+    from agents.heuristic.packing_core.stability import _cg_margin_from_polygon
 
     # ゼロ幅Candidateやゼロ面積セルを作らず、合成2点をprivate helperへ直接渡して検証する
     # （ユーザー確定の検証方法）。
@@ -630,7 +630,7 @@ def test_cg_margin_k_less_than_3_is_negative_infinity_synthetic():
 
 
 def test_cg_margin_inside_boundary_outside_signs_synthetic():
-    from src.packing_core.stability import _cg_margin_from_polygon
+    from agents.heuristic.packing_core.stability import _cg_margin_from_polygon
 
     square = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], dtype=np.float64)
     assert _cg_margin_from_polygon(square, np.array([0.5, 0.5])) > 0.0
@@ -639,7 +639,7 @@ def test_cg_margin_inside_boundary_outside_signs_synthetic():
 
 
 def test_cg_margin_uses_vertex_distance_outside_corner_synthetic():
-    from src.packing_core.stability import _cg_margin_from_polygon
+    from agents.heuristic.packing_core.stability import _cg_margin_from_polygon
 
     # 頂点の外側（対角方向）では、辺の延長線ではなく頂点への距離が使われることを検証する。
     # 射影係数[0,1]クランプが無いと辺(1,0)-(1,1)の無限直線距離1.0を誤って返してしまう。
@@ -649,7 +649,7 @@ def test_cg_margin_uses_vertex_distance_outside_corner_synthetic():
 
 
 def test_cg_margin_return_type_is_float():
-    from src.packing_core.stability import cg_margin
+    from agents.heuristic.packing_core.stability import cg_margin
 
     state = _state_with_placed([])
     cand = _candidate(bottom_z=FLOOR_Z)

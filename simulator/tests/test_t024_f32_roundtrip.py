@@ -30,10 +30,10 @@ symbolic に導出、ハードコードしない）（HF-001でv1.27改訂：Z�
 import numpy as np
 import pytest
 
-from src.packing_core import constants
-from src.packing_core.container_space import build_container_space
-from src.packing_core.state import PackingState
-from src.packing_core.types import Candidate, EMSBox, ItemSpec, PlacedItem
+from agents.heuristic.packing_core import constants
+from agents.heuristic.packing_core.container_space import build_container_space
+from agents.heuristic.packing_core.state import PackingState
+from agents.heuristic.packing_core.types import Candidate, EMSBox, ItemSpec, PlacedItem
 
 INNER_MIN_REL = np.array([-0.40, -0.40, 0.02], dtype=np.float64)
 INNER_MAX_REL = np.array([0.40, 0.40, 1.02], dtype=np.float64)
@@ -103,9 +103,9 @@ def _generate_and_roundtrip(state, item, ems, pp):
 
     Returns: (original_cand, roundtripped_cand)
     """
-    from src.packing_core.candidates import candidate_from_ems
-    from src.packing_core.masks import MaskStage, evaluate_stage
-    from src.packing_core.state import make_action
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.masks import MaskStage, evaluate_stage
+    from agents.heuristic.packing_core.state import make_action
 
     cand = candidate_from_ems(item, container_idx=0, orientation=0, ems_id=0, ems=ems, pp=pp)
     assert cand is not None, "fixtureの寸法設計が不正でCandidateが生成されなかった"
@@ -321,7 +321,7 @@ def test_f32_002_z_bottom_clearance_survives_roundtrip():
 def test_f32_003_ceiling_side_receives_no_extra_clearance_from_slack():
     """Z支持面側はXYと同じ`z_clearance`を加える（HF-001, v1.27）が、ceiling_marginは
     既存判定へ委譲し候補生成時に新規余裕を追加しない（生成直後の pos_rel を直接検証）。"""
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item, ems = _fixture_bnd_zbot()
     clr = _xy_clearance(PP0)

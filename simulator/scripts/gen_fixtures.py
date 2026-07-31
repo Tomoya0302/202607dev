@@ -43,11 +43,11 @@ from src.ground_handling.containers import Container
 from src.ground_handling.env import GroundHandlingEnv
 from src.ground_handling.items import Item
 from src.ground_handling.validator import PlacementValidator
-from src.packing_core import geometry
-from src.packing_core.constants import EPS_GEOM
-from src.packing_core.masks import prefilter_dims
-from src.packing_core.state import PackingState, build_state, make_action, rel_to_world
-from src.packing_core.types import Candidate
+from agents.heuristic.packing_core import geometry
+from agents.heuristic.packing_core.constants import EPS_GEOM
+from agents.heuristic.packing_core.masks import prefilter_dims
+from agents.heuristic.packing_core.state import PackingState, build_state, make_action, rel_to_world
+from agents.heuristic.packing_core.types import Candidate
 
 logger = logging.getLogger("packing")
 

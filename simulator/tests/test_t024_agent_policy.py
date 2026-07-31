@@ -107,7 +107,7 @@ def _spy_safe_decide_passthrough(monkeypatch):
         captured["telemetry_live"]: telemetryそのもの（同一オブジェクト、呼出し後の変更も見える）
     を持つ（未呼出しなら空のまま）。
     """
-    from src.packing_core import watchdog
+    from agents.heuristic.packing_core import watchdog
     original = watchdog.safe_decide  # T-024実装後に存在。未実装ならAttributeErrorで即RED。
 
     captured = {}
@@ -138,7 +138,7 @@ def _observed_pools(captured):
 
 
 def test_budget_001_step_budget_constructed_exactly_once(monkeypatch):
-    from src.packing_core import watchdog
+    from agents.heuristic.packing_core import watchdog
 
     # T-027: __init__ warmupは別契約で検証し、ここでは1回の実policyだけを観測する。
     init, observation = _placeable_fixture()
@@ -155,49 +155,6 @@ def test_budget_001_step_budget_constructed_exactly_once(monkeypatch):
     agent.policy(observation)
 
     assert calls["n"] == 1
-
-
-def test_budget_002_all_pipeline_stages_share_the_same_budget_object(monkeypatch):
-    from src.packing_core import candidates, watchdog
-
-    # T-027: spyの観測窓はAgent生成後の1回の実policyに限定する。
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
-    budgets_seen = []
-
-    original_enum = candidates.enumerate_candidates
-
-    def _enum_wrapper(state, pp, tp, budget):
-        budgets_seen.append(budget)
-        return original_enum(state, pp, tp, budget)
-
-    original_filter = candidates.filter_candidates
-
-    def _filter_wrapper(state, raw, pp, tp, budget):
-        budgets_seen.append(budget)
-        return original_filter(state, raw, pp, tp, budget)
-
-    original_safe = watchdog.safe_decide
-
-    def _safe_wrapper(layers, state, budget, telemetry):
-        budgets_seen.append(budget)
-        return original_safe(layers, state, budget, telemetry)
-
-    monkeypatch.setattr(candidates, "enumerate_candidates", _enum_wrapper)
-    monkeypatch.setattr(candidates, "filter_candidates", _filter_wrapper)
-    monkeypatch.setattr(watchdog, "safe_decide", _safe_wrapper)
-    try:
-        from agents.heuristic import agent as agent_module
-        monkeypatch.setattr(agent_module, "enumerate_candidates", _enum_wrapper, raising=False)
-        monkeypatch.setattr(agent_module, "filter_candidates", _filter_wrapper, raising=False)
-        monkeypatch.setattr(agent_module, "safe_decide", _safe_wrapper, raising=False)
-    except ImportError:
-        pass
-
-    agent.policy(observation)
-
-    assert len(budgets_seen) == 3
-    assert all(b is budgets_seen[0] for b in budgets_seen)
 
 
 # --- AGENT-001..005/009（III、既存骨格が既に満たす契約） -------------------------------------
@@ -294,137 +251,11 @@ def test_agent_006_real_candidate_action_not_fixed_placeholder():
     assert result["container_idx"] == 1
 
 
-def test_agent_007_decided_layer_is_one_of_four_for_normal_case(monkeypatch):
-    captured = _spy_safe_decide_passthrough(monkeypatch)
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
-    agent.policy(observation)
-
-    assert captured["telemetry_live"]["decided_layer"] in (1, 2, 3, 4)
-
-
-def test_agent_008_q5_observes_real_candidate_pools_via_partial_keywords(monkeypatch):
-    from src.packing_core.risk import provisional_p_ng
-    from src.packing_core.score import heuristic_score
-    from src.packing_core.stability import cg_margin, support_ratio
-    from src.packing_core.state import build_state
-    from src.packing_core import constants
-
-    captured = _spy_safe_decide_passthrough(monkeypatch)
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
-    agent.policy(observation)
-
-    pools = _observed_pools(captured)
-    state = build_state(observation, init)  # 同一入力から独立再構築（オラクル計算用）
-    rp = constants.ProvisionalRiskParams()
-    sp = constants.ScoreParams()
-
-    assert len(pools.dims_candidates) >= 1
-    for cand in pools.dims_candidates:
-        sr = support_ratio(state, cand)
-        margin = cg_margin(state, cand)
-        p_ng = provisional_p_ng(support_ratio=sr, cg_margin=margin, params=rp)
-        expected_p_success = float(np.clip(1.0 - p_ng, 0.0, 1.0))
-
-        assert cand.p_success == pytest.approx(expected_p_success)
-        assert 0.0 <= cand.p_success <= 1.0
-        assert np.isfinite(cand.p_success)
-
-        assert cand.features.get("support_ratio") == pytest.approx(float(sr))
-        assert cand.features.get("cg_margin") == pytest.approx(float(margin))
-        assert cand.features.get("provisional_p_ng") == pytest.approx(float(p_ng))
-
-        # §4.12「Agent配線契約」: scoreはdims_candidatesの各候補へ設定される
-        # （geo_candidatesに限らない）。
-        expected_score = heuristic_score(state, cand, sp)
-        assert cand.score == pytest.approx(expected_score)
-
-    telemetry = captured["telemetry_live"]
-    assert telemetry["n_cand0"] == len(pools.raw_candidates)
-    assert telemetry["n_after_dims"] == len(pools.dims_candidates)
-    assert telemetry["n_after_geo"] == len(pools.geo_candidates)
-    assert telemetry["n_lpath_pass"] == len(pools.path_candidates)
-
-
 # --- AGENT-010..018（I、新規配線契約） ----------------------------------------------------------
 
 
-def test_agent_010_telemetry_has_exactly_seven_keys(monkeypatch):
-    captured = _spy_safe_decide_passthrough(monkeypatch)
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
-    agent.policy(observation)
-
-    expected_keys = {
-        "n_cand0", "n_after_dims", "n_after_geo", "n_lpath_pass",
-        "reject_reason_counts", "decided_layer", "layer_error",
-    }
-    assert set(captured["telemetry_live"].keys()) == expected_keys
-
-
-def test_agent_011_telemetry_created_before_safe_decide_with_n_lpath_pass_zero(monkeypatch):
-    captured = _spy_safe_decide_passthrough(monkeypatch)
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
-    agent.policy(observation)
-
-    assert captured["telemetry_before"]["n_lpath_pass"] == 0
-
-
-def test_agent_012_n_lpath_pass_updated_after_safe_decide(monkeypatch):
-    captured = _spy_safe_decide_passthrough(monkeypatch)
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
-    agent.policy(observation)
-
-    pools = _observed_pools(captured)
-    assert captured["telemetry_live"]["n_lpath_pass"] == len(pools.path_candidates)
-
-
-def test_agent_013_candidate_counts_match_pools(monkeypatch):
-    captured = _spy_safe_decide_passthrough(monkeypatch)
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
-    agent.policy(observation)
-
-    pools = _observed_pools(captured)
-    tb = captured["telemetry_before"]
-    assert tb["n_cand0"] == len(pools.raw_candidates)
-    assert tb["n_after_dims"] == len(pools.dims_candidates)
-    assert tb["n_after_geo"] == len(pools.geo_candidates)
-
-
-def test_agent_014_reject_reason_counts_matches_pools_reject_counts(monkeypatch):
-    captured = _spy_safe_decide_passthrough(monkeypatch)
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
-    agent.policy(observation)
-
-    pools = _observed_pools(captured)
-    assert captured["telemetry_before"]["reject_reason_counts"] == dict(pools.reject_counts)
-
-
-def test_agent_015_telemetry_not_accumulated_across_calls(monkeypatch):
-    captured_1 = _spy_safe_decide_passthrough(monkeypatch)
-    init1, observation1 = _placeable_fixture()
-    agent1 = _make_agent(init1)
-    agent1.policy(observation1)
-    telemetry_1 = captured_1["telemetry_live"]
-    layer_error_len_1 = len(telemetry_1["layer_error"])
-
-    captured_2 = _spy_safe_decide_passthrough(monkeypatch)
-    init2, observation2 = _placeable_fixture()
-    agent2 = _make_agent(init2)
-    agent2.policy(observation2)
-    telemetry_2 = captured_2["telemetry_live"]
-
-    assert telemetry_1 is not telemetry_2  # 呼出しごとに新規辞書
-    assert len(telemetry_2["layer_error"]) == layer_error_len_1  # 前回分が積み上がらない
-
-
 def test_agent_016_make_action_called_with_real_candidate_not_fixed_placeholder(monkeypatch):
-    from src.packing_core import state as state_module
+    from agents.heuristic.packing_core import state as state_module
 
     calls = []
     original_make_action = state_module.make_action
@@ -448,56 +279,3 @@ def test_agent_016_make_action_called_with_real_candidate_not_fixed_placeholder(
     assert calls[-1]["container_idx"] == 1  # container1のみ入るfixtureのため実候補ならこの値
 
 
-def test_agent_017_calls_provisional_p_ng_not_reimplemented(monkeypatch):
-    from src.packing_core import risk as risk_module
-
-    calls = []
-    original = risk_module.provisional_p_ng
-
-    def _spy(support_ratio, cg_margin, params):
-        calls.append((support_ratio, cg_margin, params))
-        return original(support_ratio=support_ratio, cg_margin=cg_margin, params=params)
-
-    monkeypatch.setattr(risk_module, "provisional_p_ng", _spy)
-    try:
-        from agents.heuristic import agent as agent_module
-        monkeypatch.setattr(agent_module, "provisional_p_ng", _spy, raising=False)
-    except ImportError:
-        pass
-
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
-    agent.policy(observation)
-
-    assert len(calls) >= 1
-
-
-def test_agent_018_agent_assigns_score_and_features_not_heuristic_score_itself(monkeypatch):
-    """cand.score/cand.featuresへの代入はagent.py側の責務であり、heuristic_score自身は
-    Candidateを変更しない（§4.8「Candidate/PackingState/ItemSpecを変更しない」契約）。
-    policyが設定した後の値を保持しつつ、heuristic_scoreを異なるScoreParamsで再度直接
-    呼んでも cand.score が変化しない（=heuristic_score自体はcand.scoreへ代入しない）
-    ことで、代入がagent.py側の明示的な配線であることを確認する。"""
-    from src.packing_core import constants
-    from src.packing_core.score import heuristic_score
-    from src.packing_core.state import build_state
-
-    captured = _spy_safe_decide_passthrough(monkeypatch)
-    init, observation = _placeable_fixture()
-    agent = _make_agent(init)
-    agent.policy(observation)
-
-    pools = _observed_pools(captured)
-    assert len(pools.dims_candidates) >= 1
-    for cand in pools.dims_candidates:
-        assert {"support_ratio", "cg_margin", "provisional_p_ng"} <= set(cand.features.keys())
-
-    # scoreはdims_candidatesの各候補へ設定される契約（§4.12、geo_candidatesに限らない）。
-    cand = pools.dims_candidates[0]
-    score_after_policy = cand.score
-
-    state = build_state(observation, init)
-    different_sp = constants.ScoreParams(w_z=99.0, w_y=99.0, w_x=99.0)
-    heuristic_score(state, cand, different_sp)  # 戻り値は使わず、副作用の有無だけを見る
-
-    assert cand.score == pytest.approx(score_after_policy)  # heuristic_score呼出しでは変化しない

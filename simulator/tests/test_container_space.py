@@ -28,7 +28,7 @@ import numpy as np
 import pytest
 
 from fixtures import container_space_golden as golden
-from src.packing_core import constants
+from agents.heuristic.packing_core import constants
 
 # セル境界が内壁寸法をちょうど割り切る値を選び、格子丸め誤差の影響を排除する。
 INNER_MIN_REL = np.array([-0.48, -0.73, 0.02], dtype=np.float64)
@@ -124,12 +124,13 @@ def _box_cdict(
 def test_container_space_dataclass_fields():
     import dataclasses
 
-    from src.packing_core.container_space import ContainerSpace
+    from agents.heuristic.packing_core.container_space import ContainerSpace
 
     field_names = {f.name for f in dataclasses.fields(ContainerSpace)}
     assert field_names == {
         "index", "offset_x", "inner_min_rel", "inner_max_rel",
         "cut_planes", "shelf_boxes", "cell", "floor_z", "ceil_z", "height",
+        "is_prioritized",
         "path_entry_y_rel", "path_lane_x_min_geom_rel", "path_lane_x_max_geom_rel",
         "path_mid_resting_z_rel", "path_mid_ceiling_z_rel", "path_obstacle_boxes_rel",
     }
@@ -138,7 +139,7 @@ def test_container_space_dataclass_fields():
 # --- build_container_space（cutなし） --------------------------------------------------
 
 def test_build_container_space_basic_index_and_offset():
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -150,7 +151,7 @@ def test_build_container_space_basic_index_and_offset():
 
 def test_build_container_space_inner_bounds_recovered_from_points_and_n_vecs():
     # interface_notes.md §I-7: buffer固定値ではなく points/n_vecs の半空間交差から復元される。
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -161,7 +162,7 @@ def test_build_container_space_inner_bounds_recovered_from_points_and_n_vecs():
 
 def test_build_container_space_no_cut_planes_and_no_shelf():
     # cutなし・棚なし: 6面すべて軸整列のため cut_planes は空、shelf_boxes も空になる。
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -173,7 +174,7 @@ def test_build_container_space_no_cut_planes_and_no_shelf():
 # --- floor_z / ceil_z / height の初期化 --------------------------------------------------
 
 def test_floor_z_initialized_at_inner_wall_bottom():
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -184,7 +185,7 @@ def test_floor_z_initialized_at_inner_wall_bottom():
 
 
 def test_ceil_z_initialized_at_inner_wall_top():
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -195,7 +196,7 @@ def test_ceil_z_initialized_at_inner_wall_top():
 
 
 def test_height_initialized_at_initial_floor_height():
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(index=0, spacing=2.0)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -213,7 +214,7 @@ def test_height_initialized_at_initial_floor_height():
 # --- contains_oriented_box（cutなし） -----------------------------------------------------
 
 def test_contains_oriented_box_inside_is_true():
-    from src.packing_core.container_space import build_container_space, contains_oriented_box
+    from agents.heuristic.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict = _box_cdict(index=0, spacing=2.0)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -224,7 +225,7 @@ def test_contains_oriented_box_inside_is_true():
 
 
 def test_contains_oriented_box_poking_through_side_wall_is_false():
-    from src.packing_core.container_space import build_container_space, contains_oriented_box
+    from agents.heuristic.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict = _box_cdict(index=0, spacing=2.0)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -236,7 +237,7 @@ def test_contains_oriented_box_poking_through_side_wall_is_false():
 
 
 def test_contains_oriented_box_poking_through_ceiling_is_false():
-    from src.packing_core.container_space import build_container_space, contains_oriented_box
+    from agents.heuristic.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict = _box_cdict(index=0, spacing=2.0)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -253,7 +254,7 @@ def test_effective_volume_matches_inner_wall_volume_within_1_percent():
     # ContainerSpace は cdict をそのまま保持しない（volume フィールドを持たない）ため、
     # effective_volume(space) は cdict["volume"] へアクセスしようがなく、
     # 「そのまま返す」実装は構造上不可能。したがって関係式のみを検証する。
-    from src.packing_core.container_space import build_container_space, effective_volume
+    from agents.heuristic.packing_core.container_space import build_container_space, effective_volume
 
     cdict = _box_cdict(index=0, spacing=2.0)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -269,7 +270,7 @@ def test_effective_volume_matches_inner_wall_volume_within_1_percent():
 # あくまで cdict["center"][0] とする（index*spacing の再計算ではない）。
 
 def test_offset_x_uses_reported_center():
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     index = 3
     spacing = 1.8
@@ -287,7 +288,7 @@ def test_offset_x_uses_reported_center_for_nonuniform_layout():
     """center.x が単一の index*spacing では表現できない非等間隔配置でも、
     build_container_space は cdict["center"][0] をそのまま offset_x として採用する
     （interface_notes.md §I-8 の回帰テスト）。"""
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict_a = _box_cdict(index=2, offset_x=0.37)
     cdict_b = _box_cdict(index=5, offset_x=5.93)
@@ -340,7 +341,7 @@ def _fixture_ab_expected(shelf: bool):
 def test_small_shelf_computed_regardless_of_cut_planes_and_shelf_flag():
     # cut_x=0.3 だが幾何は純粋な直方体（cut_planes=[]）。shelf=False でも小棚は計算されるはず
     # （interface_notes.md §K.2: 小棚は cdict["shelf"]・cut_planes の有無に関わらず常時計算）。
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -352,7 +353,7 @@ def test_small_shelf_computed_regardless_of_cut_planes_and_shelf_flag():
 def test_small_shelf_not_added_when_clipped_volume_is_zero():
     # cut_x=0.0 では小棚の半径が0となり、クリップ後AABBがゼロ体積になるため追加されないはず
     # （§K.2/K.4 の正体積フィルタ）。
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.0, cut_y=0.0, shelf=False)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -361,7 +362,7 @@ def test_small_shelf_not_added_when_clipped_volume_is_zero():
 
 
 def test_main_shelf_absent_when_shelf_flag_false():
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -371,7 +372,7 @@ def test_main_shelf_absent_when_shelf_flag_false():
 
 
 def test_main_shelf_present_when_shelf_flag_true():
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=True)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -381,7 +382,7 @@ def test_main_shelf_present_when_shelf_flag_true():
 
 
 def test_shelf_boxes_aabb_matches_golden_for_fixture_c():
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=True)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -412,7 +413,7 @@ def test_shelf_boxes_aabb_matches_golden_for_fixture_c():
 
 def test_floor_z_matches_golden_for_cut_fixture():
     # Fixture A（shelf=False）。floor_z は cut_planes のみに依存し、棚の有無とは無関係。
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict, inner_min, inner_max, cut_planes, shelf_boxes, floor_z_golden, ceil_z_golden = (
         _fixture_ab_expected(shelf=False)
@@ -424,7 +425,7 @@ def test_floor_z_matches_golden_for_cut_fixture():
 
 def test_ceil_z_matches_golden_for_shelf_fixture():
     # Fixture B（shelf=True）。ceil_z は内壁天井と棚下面（小棚+大棚）両方のcapを反映する。
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict, inner_min, inner_max, cut_planes, shelf_boxes, floor_z_golden, ceil_z_golden = (
         _fixture_ab_expected(shelf=True)
@@ -437,7 +438,7 @@ def test_ceil_z_matches_golden_for_shelf_fixture():
 def test_contains_oriented_box_false_when_poking_into_cut_wedge():
     # Fixture A。cut平面で削られた領域（x<=-0.2917付近、床がz≈0.19まで持ち上がる側）に
     # 沈み込む箱はFalseになるはず。
-    from src.packing_core.container_space import build_container_space, contains_oriented_box
+    from agents.heuristic.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict, *_ = _fixture_ab_expected(shelf=False)
     space = build_container_space(cdict, index=0, cell=golden.CELL)
@@ -449,7 +450,7 @@ def test_contains_oriented_box_false_when_poking_into_cut_wedge():
 
 def test_contains_oriented_box_true_on_raised_floor():
     # 同じX帯だが、cutで持ち上がった床（x=-0.44でz≈0.188）より上に置けばTrueになるはず。
-    from src.packing_core.container_space import build_container_space, contains_oriented_box
+    from agents.heuristic.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict, *_ = _fixture_ab_expected(shelf=False)
     space = build_container_space(cdict, index=0, cell=golden.CELL)
@@ -462,7 +463,7 @@ def test_contains_oriented_box_true_on_raised_floor():
 def test_contains_oriented_box_false_when_overlapping_main_shelf():
     # Fixture B（shelf=True）。大棚クリップ後AABB（Y∈[0.02,0.48], Z∈[0.52,0.54]付近）と
     # 重なる箱はFalseになるはず。
-    from src.packing_core.container_space import build_container_space, contains_oriented_box
+    from agents.heuristic.packing_core.container_space import build_container_space, contains_oriented_box
 
     cdict, *_ = _fixture_ab_expected(shelf=True)
     space = build_container_space(cdict, index=0, cell=golden.CELL)
@@ -479,7 +480,7 @@ def test_contains_oriented_box_false_when_overlapping_main_shelf():
 def test_effective_volume_rectangular_baseline_matches_analytic_volume():
     # DoD①: cut_x=0, cut_y=0, shelf=False, 小棚クリップ後ゼロ体積の直方体基準ケースでは、
     # 解析的な内壁体積との相対誤差<1%を維持する。
-    from src.packing_core.container_space import build_container_space, effective_volume
+    from agents.heuristic.packing_core.container_space import build_container_space, effective_volume
 
     cdict = _box_cdict(cut_x=0.0, cut_y=0.0, shelf=False)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -493,7 +494,7 @@ def test_effective_volume_rectangular_baseline_matches_analytic_volume():
 def test_effective_volume_matches_independent_grid_integral_for_cut_fixture():
     # DoD②: cdict["volume"]（公式体積式）との一致は求めない。golden floor_z/ceil_zからの
     # 独立格子積分とのみ一致することを検証する。
-    from src.packing_core.container_space import build_container_space, effective_volume
+    from agents.heuristic.packing_core.container_space import build_container_space, effective_volume
 
     cdict, inner_min, inner_max, cut_planes, shelf_boxes, floor_z_golden, ceil_z_golden = (
         _fixture_ab_expected(shelf=False)
@@ -512,7 +513,7 @@ def test_effective_volume_matches_independent_grid_integral_for_cut_fixture():
 
 
 def test_effective_volume_matches_independent_grid_integral_for_cut_and_shelf_fixture():
-    from src.packing_core.container_space import build_container_space, effective_volume
+    from agents.heuristic.packing_core.container_space import build_container_space, effective_volume
 
     cdict, inner_min, inner_max, cut_planes, shelf_boxes, floor_z_golden, ceil_z_golden = (
         _fixture_ab_expected(shelf=True)
@@ -533,7 +534,7 @@ def test_effective_volume_matches_independent_grid_integral_for_cut_and_shelf_fi
 
 
 def test_path_entry_y_rel_is_negative_half_width():
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -544,7 +545,7 @@ def test_path_entry_y_rel_is_negative_half_width():
 def test_path_lane_x_geom_bounds_match_official_formula():
     """出典: validator.py::check_transport_path L96-97。geom基底は half_lwh/start_margin を
     含まない候補・validator設定に非依存な値である（A15）。"""
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -556,7 +557,7 @@ def test_path_lane_x_geom_bounds_match_official_formula():
 
 def test_path_mid_resting_and_ceiling_z_match_official_formula():
     """出典: validator.py::check_transport_path L103-111（resting_surfaces[1]/ceiling_surfaces[0]）。"""
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -587,7 +588,7 @@ def test_path_mid_resting_and_ceiling_z_identity_with_inner_bounds():
     されており、本テストもその検証済み条件を再現する（`buffer!=0`域への拡張はT-016Bの
     スコープ外、別途報告が必要な既知の限界）。
     """
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     thickness, height, buffer = 0.04, 1.61, 0.0  # T-016Aゴールデン基準コンテナと同一の値
     raw_config = {
@@ -605,7 +606,7 @@ def test_path_obstacle_boxes_rel_uses_raw_aabb_not_clipped():
     """`path_obstacle_boxes_rel` はクリップ前のraw AABB（`shelf_boxes` とは別物）。
     大棚のX半径は内壁AABBのX境界より壁厚半分外側に出る（§K.4）ため、shelf=True では
     raw AABBのXレンジが `shelf_boxes`（クリップ後）より広いことで区別できる。"""
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=True)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -625,7 +626,7 @@ def test_path_obstacle_boxes_rel_uses_raw_aabb_not_clipped():
 
 def test_path_obstacle_boxes_rel_small_shelf_only_when_shelf_flag_false():
     """`cdict["shelf"]` が False でも小棚のraw AABBは常時含まれる（§K.2、要素数1）。"""
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = _box_cdict(cut_x=0.3, cut_y=0.3, shelf=False)
     space = build_container_space(cdict, index=0, cell=CELL)
@@ -634,7 +635,7 @@ def test_path_obstacle_boxes_rel_small_shelf_only_when_shelf_flag_false():
 
 
 def test_path_obstacle_boxes_rel_matches_golden_raw_aabb():
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     cdict = golden.build_fixture_ab_cdict(shelf=True)
     space = build_container_space(cdict, index=0, cell=golden.CELL)

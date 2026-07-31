@@ -1,7 +1,7 @@
 """統合T-024: candidates.py 候補生成契約テスト（詳細仕様書 v1.18 §4.12「候補列挙・候補生成
 契約」「candidates.py 公開API契約」、契約計画 §3.B）。
 
-`src/packing_core/candidates.py` は本チケット時点で未実装のため、対象モジュールの import は
+`agents/heuristic/packing_core/candidates.py` は本チケット時点で未実装のため、対象モジュールの import は
 各テスト関数の内部で行う（collection error 回避、`tests/test_masks.py`・
 `tests/test_stability.py` と同方針）。全19家族が分類 I（未実装 module）。
 
@@ -23,9 +23,9 @@
 import numpy as np
 import pytest
 
-from src.packing_core import constants
-from src.packing_core.geometry import oriented_size
-from src.packing_core.types import EMSBox, ItemSpec
+from agents.heuristic.packing_core import constants
+from agents.heuristic.packing_core.geometry import oriented_size
+from agents.heuristic.packing_core.types import EMSBox, ItemSpec
 
 PP0 = constants.PlacementParams()
 
@@ -58,23 +58,23 @@ def _xy_gen_clearance(pp) -> float:
 
 
 def test_cand_001_candidate_key_type_and_field_order():
-    """`CandidateKey = tuple[int,int,int,int]`、順序は
-    (item_idx, container_idx, orientation, ems_id)。"""
-    from src.packing_core.candidates import candidate_key
-    from src.packing_core.types import Candidate
+    """`CandidateKey = tuple[int,int,int,int,int]`、順序は
+    (item_idx, container_idx, orientation, ems_id, anchor)（HF-003 で anchor を追加）。"""
+    from agents.heuristic.packing_core.candidates import candidate_key
+    from agents.heuristic.packing_core.types import Candidate
 
     cand = Candidate(
         item_idx=3, container_idx=1, ems_id=2, orientation=4,
-        pos_rel=np.zeros(3), osize=np.ones(3),
+        pos_rel=np.zeros(3), osize=np.ones(3), anchor=0,
     )
     key = candidate_key(cand)
-    assert key == (3, 1, 4, 2)
+    assert key == (3, 1, 4, 2, 0)
 
 
 def test_cand_002_candidate_key_all_builtin_int():
     """`candidate_key` の戻り値は全て組込み int（numpy int を漏らさない）。"""
-    from src.packing_core.candidates import candidate_key
-    from src.packing_core.types import Candidate
+    from agents.heuristic.packing_core.candidates import candidate_key
+    from agents.heuristic.packing_core.types import Candidate
 
     cand = Candidate(
         item_idx=np.int64(3), container_idx=np.int64(1),
@@ -87,8 +87,8 @@ def test_cand_002_candidate_key_all_builtin_int():
 
 def test_cand_003_candidate_key_projects_from_candidate_fields():
     """`candidate_key` の各要素が cand の該当属性の値と一致する（別集計値でない）。"""
-    from src.packing_core.candidates import candidate_key
-    from src.packing_core.types import Candidate
+    from agents.heuristic.packing_core.candidates import candidate_key
+    from agents.heuristic.packing_core.types import Candidate
 
     cand = Candidate(
         item_idx=7, container_idx=2, ems_id=9, orientation=5,
@@ -116,7 +116,7 @@ def test_cand_003_candidate_key_projects_from_candidate_fields():
     ],
 )
 def test_cand_004_pos_rel_anchor_formula(case):
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     ems = _ems([0.1, 0.2, 0.3], [1.1, 1.2, 1.3])  # 非ゼロオフセットEMS（ハードコード0の検出用）
@@ -182,7 +182,7 @@ def test_cand_004_pos_rel_anchor_formula(case):
 
 
 def test_cand_005_osize_matches_oriented_size():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     ems = _ems([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
@@ -200,7 +200,7 @@ def test_cand_005_osize_matches_oriented_size():
 def test_cand_006_xy_clearance_only_on_anchor_faces():
     """余裕のある大きなEMSで、アンカー側（X若い側・Y奥側）のみ厳密クリアランス、対辺
     （X遠い側・Y近い側）は余りの空間がそのまま残る（対辺にも同じクリアランスを課さない）。"""
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     ems = _ems([0.0, 0.0, 0.0], [10.0, 10.0, 10.0])  # 十分に大きいEMS
@@ -233,7 +233,7 @@ def test_cand_007_z_action_position_scales_with_slack():
     """Z方向のaction位置は想定沈降後位置(`ems.min_rel[2]+osize[2]/2`)から
     `z_generation_clearance`だけ浮く。`candidate_generation_slack`を変えるとXYと同じ量だけ
     Zもシフトする（HF-001でのZクリアランス追加、旧v1.16の「Zはslack非加算」契約を撤回）。"""
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     ems = _ems([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
@@ -260,7 +260,7 @@ def test_cand_007_z_action_position_scales_with_slack():
 
 
 def test_cand_008_insufficient_x_dimension_returns_none():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     clr = _xy_gen_clearance(PP0)
@@ -271,7 +271,7 @@ def test_cand_008_insufficient_x_dimension_returns_none():
 
 
 def test_cand_009_insufficient_y_dimension_returns_none():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     clr = _xy_gen_clearance(PP0)
@@ -281,7 +281,7 @@ def test_cand_009_insufficient_y_dimension_returns_none():
 
 
 def test_cand_010_insufficient_z_dimension_returns_none():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     ems = _ems([0.0, 0.0, 0.0], [1.0, 1.0, 0.1 - 1e-4])  # z不足
@@ -293,8 +293,8 @@ def test_cand_010_insufficient_z_dimension_returns_none():
 
 
 def test_cand_011_sufficient_dimensions_returns_candidate():
-    from src.packing_core.candidates import candidate_from_ems
-    from src.packing_core.types import Candidate
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.types import Candidate
 
     item = _item(size=(0.3, 0.2, 0.1))
     ems = _ems([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
@@ -306,7 +306,7 @@ def test_cand_011_sufficient_dimensions_returns_candidate():
 
 
 def test_cand_012_item_idx_is_item_spec_idx_not_position():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(idx=42, size=(0.3, 0.2, 0.1))
     ems = _ems([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
@@ -320,7 +320,7 @@ def test_cand_012_item_idx_is_item_spec_idx_not_position():
 
 
 def test_cand_013_index_fields_are_builtin_int():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     ems = _ems([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
@@ -340,7 +340,7 @@ def test_cand_013_index_fields_are_builtin_int():
 
 
 def test_cand_014_does_not_mutate_inputs():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(idx=5, size=(0.3, 0.2, 0.1))
     ems = _ems([0.1, 0.2, 0.3], [1.1, 1.2, 1.3])
@@ -359,7 +359,7 @@ def test_cand_014_does_not_mutate_inputs():
 
 
 def test_cand_015_does_not_call_mask_functions(monkeypatch):
-    from src.packing_core import candidates, masks
+    from agents.heuristic.packing_core import candidates, masks
 
     calls = {"dims": 0, "inclusion": 0, "overlap": 0, "ceiling": 0, "l_path": 0}
 
@@ -387,7 +387,7 @@ def test_cand_015_does_not_call_mask_functions(monkeypatch):
 
 
 def test_cand_016_no_ems_reassignment_ems_id_passthrough():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     ems = _ems([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
@@ -400,7 +400,7 @@ def test_cand_016_no_ems_reassignment_ems_id_passthrough():
 
 
 def test_cand_017_returned_candidate_initial_state():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     item = _item(size=(0.3, 0.2, 0.1))
     ems = _ems([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
@@ -419,7 +419,7 @@ def test_cand_017_returned_candidate_initial_state():
 def test_cand_018_xy_required_clearance_floor_branch():
     """inclusion_margin>0（symp的に -inclusion_margin+internal_extra が internal_extra 未満）
     のとき、xy_required_clearance は internal_extra の床値を使う（max()のfloor分岐）。"""
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     pp = constants.PlacementParams(
         inclusion_margin=0.02, safety_margin=PP0.safety_margin, start_z=PP0.start_z,
@@ -445,7 +445,7 @@ def test_cand_018_xy_required_clearance_floor_branch():
 
 
 def test_cand_019_xy_generation_clearance_adds_slack_exactly():
-    from src.packing_core.candidates import candidate_from_ems
+    from agents.heuristic.packing_core.candidates import candidate_from_ems
 
     pp = constants.PlacementParams(
         inclusion_margin=0.02, safety_margin=PP0.safety_margin, start_z=PP0.start_z,

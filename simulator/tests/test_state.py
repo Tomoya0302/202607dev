@@ -2,7 +2,7 @@
 §6 T-012、interface_notes.md §E/§F/§H/§I-8）。
 
 state.py は本チケット時点で未実装（本体実装は別セッション）。--collect-only を成功させるため、
-対象モジュール src.packing_core.state の import は各テスト関数の内部で行う
+対象モジュール agents.heuristic.packing_core.state の import は各テスト関数の内部で行う
 （tests/test_geometry.py・tests/test_container_space.py と同方針）。skip/xfail/仮実装は禁止。
 
 init/observation の container_list について:
@@ -20,7 +20,7 @@ import time
 import numpy as np
 import pytest
 
-from src.packing_core import constants
+from agents.heuristic.packing_core import constants
 
 CELL = constants.GridParams().cell
 EPS_GEOM = constants.EPS_GEOM
@@ -49,7 +49,7 @@ def _make_space(
     1x1セルのダミー配列で代用する（container_space.py は実装済みのためコンストラクタを
     直接呼べるが、対象モジュール state.py には依存しないようこの関数内で import する）。
     """
-    from src.packing_core.container_space import ContainerSpace
+    from agents.heuristic.packing_core.container_space import ContainerSpace
 
     imin = np.asarray(inner_min_rel, dtype=np.float64)
     imax = np.asarray(inner_max_rel, dtype=np.float64)
@@ -298,7 +298,7 @@ def _assert_perf_fixture_valid(
 def test_state_world_to_rel_and_rel_to_world_direction_and_roundtrip():
     """§3.1: pos_rel = pos_world - (offset_x,0,0)。X方向のみ offset_x を加減し、Y/Z は不変。
     往復性 rel_to_world(world_to_rel(p)) == p（atol=1e-12）を確認する。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     space = _make_space(offset_x=1.8, inner_min_rel=DEFAULT_INNER_MIN, inner_max_rel=DEFAULT_INNER_MAX)
     p_world = np.array([2.3, -0.5, 0.9], dtype=np.float64)
@@ -324,7 +324,7 @@ def test_state_offset_x_nonuniform_multi_container():
     """§I-8/§4.4: offset_x は cdict["center"][0] を直接使用する（index*spacing ではない）。
     非等間隔配置（index*spacing で表現できない）の3容器で、各 ContainerSpace.offset_x が
     対応する center[0] と一致し、world_to_rel が自容器の offset のみを使うことを確認する。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     offsets = [0.0, 1.8, 5.93]
     specs = [(i, off, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX) for i, off in enumerate(offsets)]
@@ -351,7 +351,7 @@ def test_state_offset_x_nonuniform_multi_container():
 def test_state_make_action_keys_types_dtype():
     """§3.4: make_action の戻り値は item_idx/container_idx/place_pos/orientation の4キーのみ。
     place_pos は np.float32 の ndarray、他は int（np.int64 を int() に変換済み）。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     action = state.make_action(
         np.int64(2), np.int64(1), np.array([0.25, -0.5, 0.15], dtype=np.float64), np.int64(3)
@@ -379,9 +379,9 @@ def test_state_make_action_keys_types_dtype():
 def test_state_packing_state_structure_and_meta():
     """§4.4: PackingState の型・辞書契約（placed/ems/ems_truncation は全コンテナindexキー、
     pool は ItemSpec のリスト）と meta 契約（optimize/lookahead_k必須、spacing禁止）を検証する。"""
-    from src.packing_core import state
-    from src.packing_core.container_space import ContainerSpace
-    from src.packing_core.types import EMSBox, ItemSpec
+    from agents.heuristic.packing_core import state
+    from agents.heuristic.packing_core.container_space import ContainerSpace
+    from agents.heuristic.packing_core.types import EMSBox, ItemSpec
 
     offsets = [0.0, 2.0]
     specs = [(i, off, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX) for i, off in enumerate(offsets)]
@@ -439,7 +439,7 @@ def test_state_packed_item_routed_by_belongs_to_not_position():
     packed_items）と belongs_to=1 の両方が container1 を指す構成にする。位置だけから所属
     コンテナを推測する実装は container0 に誤って割り当てるため、このテストで不合格になる
     （AABB の値自体はこのテストでは非物理的な合成であり検証しない）。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     offsets = [0.0, 2.0]
     specs = [(i, off, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX) for i, off in enumerate(offsets)]
@@ -468,7 +468,7 @@ def test_state_packed_item_routed_by_belongs_to_not_position():
 def test_state_packed_item_to_placeditem_identity_quat():
     """§4.4手順3: pos_world→pos_rel、identity quat での回転後AABBは aabb_from_center と一致する。
     PlacedItem の全フィールドが入力と一致することを検証する。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     offset_x = 1.8
     specs = [(0, offset_x, WIDE_INNER_MIN, WIDE_INNER_MAX)]
@@ -525,7 +525,7 @@ def test_state_placeditem_rotated_aabb_composite_quaternion():
         extent_i = sum_j |R_ij| * half_j（各世界軸方向への射影の最大値）で独立に求まる。
         half=(0.25,0.2,0.15) に対し extent=(0.15,0.25,0.20)。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     offset_x = 1.8
     specs = [(0, offset_x, WIDE_INNER_MIN, WIDE_INNER_MAX)]
@@ -561,7 +561,7 @@ def test_state_placeditem_rotated_aabb_composite_quaternion():
 def test_state_pool_to_itemspec():
     """§4.4手順6・A11: ItemSpec.idx はプール内 index（列挙位置）であり、item["index"] ではない。
     size/weight/is_soft/is_priority の写像も検証する。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
     init_containers, obs_containers = _container_lists(specs)
@@ -593,7 +593,7 @@ def test_state_pool_to_itemspec():
 def test_state_itemspec_kind_is_none():
     """§3.3/§H/§4.4手順6（T-012確定）: 公式observationにkind相当キーは無いため、build_state経由の
     ItemSpec.kind は常に None になる。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     specs = [(0, 0.0, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX)]
     init_containers, obs_containers = _container_lists(specs)
@@ -618,7 +618,7 @@ def test_state_itemspec_kind_is_none():
 def test_state_empty_container_placed_ems_truncation():
     """§4.4辞書契約: 空・cut/棚なし直方体で全容器indexがキーとして存在し、placed[idx]==[]、
     ems[idx] は内壁AABBに一致する EMS 1個、ems_truncation[idx]==0.0（valid_count=1<=80で打切りなし）。"""
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     offsets = [0.0, 3.0, 6.5]
     specs = [(i, off, DEFAULT_INNER_MIN, DEFAULT_INNER_MAX) for i, off in enumerate(offsets)]
@@ -656,7 +656,7 @@ def test_state_build_state_performance_median_under_500ms():
         で検証する。また、同一observation/initを反復利用しても入力辞書が変更されないことを
         _deep_equal によるスナップショット比較で毎回確認する。
     """
-    from src.packing_core import state
+    from agents.heuristic.packing_core import state
 
     imin = np.array([-0.9, -1.3, 0.02], dtype=np.float64)
     imax = np.array([0.9, 1.3, 1.6], dtype=np.float64)

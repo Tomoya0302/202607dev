@@ -8,8 +8,8 @@ soft/hard 締切の境界を検証する。`safe_decide()` 等 T-026 の機能�
 import inspect
 import time
 
-from src.packing_core import constants
-from src.packing_core.watchdog import StepBudget
+from agents.heuristic.packing_core import constants
+from agents.heuristic.packing_core.watchdog import StepBudget
 
 
 class FakeClock:
@@ -159,7 +159,7 @@ def test_default_now_fn_is_monotonic_clock() -> None:
 
 def test_watchdog_source_does_not_use_time_time() -> None:
     """`watchdog.py` が `time.time()` を使用していないことを静的に確認する。"""
-    from src.packing_core import watchdog
+    from agents.heuristic.packing_core import watchdog
 
     source = inspect.getsource(watchdog)
     assert "time.time(" not in source

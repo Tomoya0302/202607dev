@@ -17,9 +17,9 @@
 import numpy as np
 import pytest
 
-from src.packing_core import constants
-from src.packing_core.state import PackingState
-from src.packing_core.types import Candidate
+from agents.heuristic.packing_core import constants
+from agents.heuristic.packing_core.state import PackingState
+from agents.heuristic.packing_core.types import Candidate
 
 PP0 = constants.PlacementParams()
 
@@ -36,11 +36,12 @@ def _cand(item_idx=0, container_idx=0, ems_id=0, orientation=0, score=0.0, p_suc
 
 
 def _key(cand):
-    return (cand.item_idx, cand.container_idx, cand.orientation, cand.ems_id)
+    # HF-003: L_PATH キャッシュキーは anchor を含む 5-tuple（candidates.candidate_key と同順）。
+    return (cand.item_idx, cand.container_idx, cand.orientation, cand.ems_id, cand.anchor)
 
 
 def _pools(geo=None, dims=None, path=None, l_path_cache=None, reject_counts=None, raw=None):
-    from src.packing_core.candidates import CandidatePools
+    from agents.heuristic.packing_core.candidates import CandidatePools
     return CandidatePools(
         raw_candidates=raw if raw is not None else [],
         dims_candidates=dims if dims is not None else [],
@@ -56,17 +57,17 @@ def _minimal_state():
 
 
 def _never_over_budget():
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.watchdog import StepBudget
     return StepBudget(t0=0.0, soft=1e6, hard=2e6, now_fn=lambda: 0.0)
 
 
 def _already_over_soft_budget():
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.watchdog import StepBudget
     return StepBudget(t0=0.0, soft=0.0, hard=1.0, now_fn=lambda: 100.0)
 
 
 def _already_over_hard_budget():
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.watchdog import StepBudget
     return StepBudget(t0=0.0, soft=0.0, hard=0.0, now_fn=lambda: 100.0)  # soft/hard共に既に超過
 
 
@@ -86,7 +87,7 @@ class _FlipClock:
 
 def _patch_check_l_path(monkeypatch, fn):
     """import文の形式（`masks.check_l_path`直呼びか`from...import`か）に依存せずスパイ化する。"""
-    from src.packing_core import masks, watchdog
+    from agents.heuristic.packing_core import masks, watchdog
     monkeypatch.setattr(masks, "check_l_path", fn, raising=False)
     monkeypatch.setattr(watchdog, "check_l_path", fn, raising=False)
 
@@ -115,7 +116,7 @@ def _spy_check_l_path(monkeypatch, result_by_key=None, default=True, calls_list=
 
 
 def test_layer_001_cache_records_pass_as_true(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cand = _cand(item_idx=0, score=1.0)
     pools = _pools(geo=[cand])
@@ -128,7 +129,7 @@ def test_layer_001_cache_records_pass_as_true(monkeypatch):
 
 
 def test_layer_002_cache_records_fail_as_false(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cand = _cand(item_idx=0, score=1.0)
     pools = _pools(geo=[cand])
@@ -141,7 +142,7 @@ def test_layer_002_cache_records_fail_as_false(monkeypatch):
 
 
 def test_layer_003_cached_key_not_reevaluated(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cand = _cand(item_idx=0, score=1.0)
     pools = _pools(geo=[cand], l_path_cache={_key(cand): True})  # 事前キャッシュ済み
@@ -154,7 +155,7 @@ def test_layer_003_cached_key_not_reevaluated(monkeypatch):
 
 
 def test_layer_004_none_is_never_stored_as_cache_value(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cand_pass = _cand(item_idx=0, score=1.0)
     cand_fail = _cand(item_idx=1, score=0.5)
@@ -171,7 +172,7 @@ def test_layer_004_none_is_never_stored_as_cache_value(monkeypatch):
 
 
 def test_layer_005_passing_candidate_added_to_path_candidates_exactly_once(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cand = _cand(item_idx=0, score=1.0)
     pools = _pools(geo=[cand])
@@ -189,7 +190,7 @@ def test_layer_005_passing_candidate_added_to_path_candidates_exactly_once(monke
 
 def test_layer_006_stable_sort_by_score_descending(monkeypatch):
     """評価順序はscore降順・同点は基本順序（sort前のgeo_candidates順）を維持する。"""
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     c_tie1 = _cand(item_idx=0, score=0.5)
     c_high = _cand(item_idx=1, score=0.9)
@@ -205,7 +206,7 @@ def test_layer_006_stable_sort_by_score_descending(monkeypatch):
 
 
 def test_layer_007_evaluates_at_most_l_path_top_m_candidates(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cands = [_cand(item_idx=i, score=float(10 - i)) for i in range(5)]  # 降順scoreで既に整列
     pools = _pools(geo=cands)
@@ -219,7 +220,7 @@ def test_layer_007_evaluates_at_most_l_path_top_m_candidates(monkeypatch):
 
 def test_layer_008_returns_max_score_among_passing(monkeypatch):
     """最高scoreの候補がL_PATH不合格でも、合格した中で最大scoreの候補を返す。"""
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     c_best_but_fails = _cand(item_idx=0, score=0.9)
     c_second_passes = _cand(item_idx=1, score=0.6)
@@ -236,7 +237,7 @@ def test_layer_008_returns_max_score_among_passing(monkeypatch):
 
 
 def test_layer_009_top_m_non_positive_never_calls_check_l_path_returns_none(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cand = _cand(item_idx=0, score=1.0)
     pools = _pools(geo=[cand])
@@ -250,7 +251,7 @@ def test_layer_009_top_m_non_positive_never_calls_check_l_path_returns_none(monk
 
 
 def test_layer_010_soft_exceeded_returns_best_so_far_without_further_evaluation(monkeypatch):
-    from src.packing_core.watchdog import StepBudget, layer1_main
+    from agents.heuristic.packing_core.watchdog import StepBudget, layer1_main
 
     cands = [_cand(item_idx=i, score=float(10 - i)) for i in range(5)]  # 降順score
     pools = _pools(geo=cands)
@@ -268,7 +269,7 @@ def test_layer_010_soft_exceeded_returns_best_so_far_without_further_evaluation(
 
 
 def test_layer_011_hard_exceeded_from_start_makes_no_new_check_l_path_calls(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cands = [_cand(item_idx=i, score=float(10 - i)) for i in range(3)]
     pools = _pools(geo=cands)  # キャッシュ未登録
@@ -282,7 +283,7 @@ def test_layer_011_hard_exceeded_from_start_makes_no_new_check_l_path_calls(monk
 
 
 def test_layer_012_reuses_cached_result_for_selection(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cand_cached = _cand(item_idx=0, score=0.9)
     cand_fresh = _cand(item_idx=1, score=0.5)
@@ -297,7 +298,7 @@ def test_layer_012_reuses_cached_result_for_selection(monkeypatch):
 
 
 def test_layer_013_no_passing_candidate_returns_none(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cands = [_cand(item_idx=i, score=float(i)) for i in range(3)]
     pools = _pools(geo=cands)
@@ -310,7 +311,7 @@ def test_layer_013_no_passing_candidate_returns_none(monkeypatch):
 
 
 def test_layer_014_exception_in_layer_is_caught_and_returns_none(monkeypatch):
-    from src.packing_core.watchdog import layer1_main
+    from agents.heuristic.packing_core.watchdog import layer1_main
 
     cand = _cand(item_idx=0, score=1.0)
     pools = _pools(geo=[cand])
@@ -326,7 +327,7 @@ def test_layer_014_exception_in_layer_is_caught_and_returns_none(monkeypatch):
 
 
 def test_layer_015_evaluates_unevaluated_candidates_in_basic_order(monkeypatch):
-    from src.packing_core.watchdog import layer2_dblf_strict
+    from agents.heuristic.packing_core.watchdog import layer2_dblf_strict
 
     c0, c1, c2 = _cand(item_idx=0), _cand(item_idx=1), _cand(item_idx=2)
     pools = _pools(geo=[c0, c1, c2])  # 未評価3件、基本順序どおり
@@ -339,7 +340,7 @@ def test_layer_015_evaluates_unevaluated_candidates_in_basic_order(monkeypatch):
 
 
 def test_layer_016_reuses_cached_results_without_reevaluation(monkeypatch):
-    from src.packing_core.watchdog import layer2_dblf_strict
+    from agents.heuristic.packing_core.watchdog import layer2_dblf_strict
 
     c0, c1 = _cand(item_idx=0), _cand(item_idx=1)
     pools = _pools(geo=[c0, c1], l_path_cache={_key(c0): False})
@@ -353,7 +354,7 @@ def test_layer_016_reuses_cached_results_without_reevaluation(monkeypatch):
 
 
 def test_layer_017_returns_first_passing_in_basic_order(monkeypatch):
-    from src.packing_core.watchdog import layer2_dblf_strict
+    from agents.heuristic.packing_core.watchdog import layer2_dblf_strict
 
     c0, c1, c2 = _cand(item_idx=0), _cand(item_idx=1), _cand(item_idx=2)
     pools = _pools(geo=[c0, c1, c2])
@@ -368,7 +369,7 @@ def test_layer_017_returns_first_passing_in_basic_order(monkeypatch):
 
 
 def test_layer_018_hard_exceeded_stops_new_evaluation_returns_none_if_nothing_passed(monkeypatch):
-    from src.packing_core.watchdog import layer2_dblf_strict
+    from agents.heuristic.packing_core.watchdog import layer2_dblf_strict
 
     c0, c1 = _cand(item_idx=0), _cand(item_idx=1)
     pools = _pools(geo=[c0, c1])
@@ -381,7 +382,7 @@ def test_layer_018_hard_exceeded_stops_new_evaluation_returns_none_if_nothing_pa
 
 
 def test_layer_019_empty_timeout_and_exception_all_return_none(monkeypatch):
-    from src.packing_core.watchdog import layer2_dblf_strict
+    from agents.heuristic.packing_core.watchdog import layer2_dblf_strict
 
     sp = constants.StageParams(l_path_top_m=10)
 
@@ -406,7 +407,7 @@ def test_layer_019_empty_timeout_and_exception_all_return_none(monkeypatch):
 
 
 def test_layer_020_never_calls_check_l_path(monkeypatch):
-    from src.packing_core.watchdog import layer3_first_fit
+    from agents.heuristic.packing_core.watchdog import layer3_first_fit
 
     c0, c1, c2 = _cand(item_idx=0), _cand(item_idx=1), _cand(item_idx=2)
     pools = _pools(geo=[c0, c1, c2])  # 全て未評価
@@ -421,7 +422,7 @@ def test_layer_020_never_calls_check_l_path(monkeypatch):
 def test_layer_021_two_group_priority_true_then_unknown_never_false():
     """v1.27改訂（HF-001）：l_path_cacheがFalse（既知不合格）の候補は返さない。
     True群→未評価群の順で優先し、False群は選択対象から完全に除外する。"""
-    from src.packing_core.watchdog import layer3_first_fit
+    from agents.heuristic.packing_core.watchdog import layer3_first_fit
 
     c_false = _cand(item_idx=0)
     c_unknown = _cand(item_idx=1)
@@ -449,7 +450,7 @@ def test_layer_021_two_group_priority_true_then_unknown_never_false():
 def test_layer_022_empty_geo_and_only_false_cached_both_return_none():
     """v1.27改訂（HF-001）：`geo_candidates`が空、またはFalse群しか残っていない場合は
     `None`を返す（既知のL_PATH不合格候補を最終手段としても返さない）。"""
-    from src.packing_core.watchdog import layer3_first_fit
+    from agents.heuristic.packing_core.watchdog import layer3_first_fit
 
     sp = constants.StageParams(l_path_top_m=10)
 
@@ -468,7 +469,7 @@ def test_layer_022_empty_geo_and_only_false_cached_both_return_none():
 
 
 def test_layer_023_returns_max_p_success_among_valid():
-    from src.packing_core.watchdog import layer4_max_p
+    from agents.heuristic.packing_core.watchdog import layer4_max_p
 
     c_low = _cand(item_idx=0, p_success=0.3)
     c_high = _cand(item_idx=1, p_success=0.7)
@@ -488,7 +489,7 @@ def test_layer_023_returns_max_p_success_among_valid():
     ],
 )
 def test_layer_024_excludes_non_finite_p_success(bad_value):
-    from src.packing_core.watchdog import layer4_max_p
+    from agents.heuristic.packing_core.watchdog import layer4_max_p
 
     c_valid = _cand(item_idx=0, p_success=0.4)
     c_invalid = _cand(item_idx=1, p_success=bad_value)
@@ -507,7 +508,7 @@ def test_layer_024_excludes_non_finite_p_success(bad_value):
     ],
 )
 def test_layer_025_excludes_out_of_range_finite_p_success(bad_value):
-    from src.packing_core.watchdog import layer4_max_p
+    from agents.heuristic.packing_core.watchdog import layer4_max_p
 
     c_valid = _cand(item_idx=0, p_success=0.4)
     c_invalid = _cand(item_idx=1, p_success=bad_value)
@@ -519,7 +520,7 @@ def test_layer_025_excludes_out_of_range_finite_p_success(bad_value):
 
 
 def test_layer_026_all_invalid_returns_none():
-    from src.packing_core.watchdog import layer4_max_p
+    from agents.heuristic.packing_core.watchdog import layer4_max_p
 
     c_nan = _cand(item_idx=0, p_success=float("nan"))
     c_neg = _cand(item_idx=1, p_success=-0.5)
@@ -534,7 +535,7 @@ def test_layer_026_all_invalid_returns_none():
 def test_layer_027_selects_from_valid_subset_only_when_some_invalid():
     """有効候補{0.3,0.7}・無効候補{1.5,NaN}混在時、有効内最大(0.7)を返す
     （比較・同点判定は有効候補内だけで行う）。"""
-    from src.packing_core.watchdog import layer4_max_p
+    from agents.heuristic.packing_core.watchdog import layer4_max_p
 
     c_valid_low = _cand(item_idx=0, p_success=0.3)
     c_valid_high = _cand(item_idx=1, p_success=0.7)
@@ -551,7 +552,7 @@ def test_layer_028_ignores_inclusion_only_failing_candidates_in_dims_not_geo():
     """v1.27改訂（HF-001）：DIMSのみ通過しINCLUSION/OVERLAP/CEILING不合格の候補が
     `dims_candidates`にだけ存在し`geo_candidates`に無い場合、layer4はそれを選ばない
     （旧v1.18の`dims_candidates`契約はこの種の候補を最終選択し得たため撤回した）。"""
-    from src.packing_core.watchdog import layer4_max_p
+    from agents.heuristic.packing_core.watchdog import layer4_max_p
 
     c_inclusion_reject = _cand(item_idx=0, p_success=0.99)  # dimsのみ、geoには入らない
     c_geo_pass = _cand(item_idx=1, p_success=0.2)  # geo通過済み（p_successは低い）
@@ -567,7 +568,7 @@ def test_layer_029_excludes_l_path_cache_false_candidates():
     """v1.27改訂（HF-001）：`l_path_cache`が`False`（既知L_PATH不合格）と判明した候補は、
     有効なp_successを持っていても選択対象から除外する。キー未登録・Trueはいずれも
     有効候補側として扱う。"""
-    from src.packing_core.watchdog import layer4_max_p
+    from agents.heuristic.packing_core.watchdog import layer4_max_p
 
     c_cache_false = _cand(item_idx=0, p_success=0.9)  # 最高p_successだがL_PATH既知不合格
     c_cache_true = _cand(item_idx=1, p_success=0.5)

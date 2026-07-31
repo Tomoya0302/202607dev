@@ -1170,8 +1170,8 @@ def test_c05_001_static_contract():
 
 def test_c05_002_position_derived_from_geometry_not_guessed():
     """pos が実コンテナ形状・床面高さ・箱寸法から再導出した値と一致する（推測固定でない）。"""
-    from src.packing_core.constants import GridParams
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.constants import GridParams
+    from agents.heuristic.packing_core.container_space import build_container_space
     from tests.fixtures.container_space_golden import build_cdict_from_raw_config
 
     task = _load_c05_container_cfg()
@@ -1288,8 +1288,8 @@ def test_c05_004_official_build_direct_verification():
     from pybullet_utils.bullet_client import BulletClient
     from src.ground_handling.containers import MultiContainerManager
     from src.ground_handling.evaluator import Evaluator
-    from src.packing_core.constants import GridParams
-    from src.packing_core.container_space import build_container_space
+    from agents.heuristic.packing_core.constants import GridParams
+    from agents.heuristic.packing_core.container_space import build_container_space
 
     _VERIFICATION_INCLUSION_MARGIN = 0.001  # v1.21: C05-004検証専用（他契約へ流用しない）
     _NEGATIVE_CONTROL_OVERSHOOT = 0.0015  # >1mm（許容公差0.001mを超える）ずらす

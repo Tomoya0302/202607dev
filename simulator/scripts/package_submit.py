@@ -31,8 +31,11 @@ CORE_FILES = (
     "container_space.py",
     "ems.py",
     "geometry.py",
+    "heightmap.py",
     "masks.py",
+    "order.py",
     "risk.py",
+    "rollout_plan.py",
     "score.py",
     "stability.py",
     "state.py",
@@ -51,8 +54,11 @@ ARCHIVE_ENTRIES = (
     "heuristic/packing_core/container_space.py",
     "heuristic/packing_core/ems.py",
     "heuristic/packing_core/geometry.py",
+    "heuristic/packing_core/heightmap.py",
     "heuristic/packing_core/masks.py",
+    "heuristic/packing_core/order.py",
     "heuristic/packing_core/risk.py",
+    "heuristic/packing_core/rollout_plan.py",
     "heuristic/packing_core/score.py",
     "heuristic/packing_core/stability.py",
     "heuristic/packing_core/state.py",
@@ -265,8 +271,17 @@ def _record(path: Path, info: os.stat_result) -> _SourceRecord:
     )
 
 
-def _scan_source_tree(root: Path, required_names: tuple[str, ...]) -> dict[str, _SourceRecord]:
-    """Inventory an entire tree with lstat, without following even ignored entries."""
+def _scan_source_tree(
+    root: Path,
+    required_names: tuple[str, ...],
+    skip_dirs: frozenset[str] = frozenset(),
+) -> dict[str, _SourceRecord]:
+    """Inventory an entire tree with lstat, without following even ignored entries.
+
+    ``skip_dirs`` names top-level subdirectories that are packaged separately (e.g. the
+    nested ``packing_core`` tree when the agent and core share one directory); they are
+    neither recursed into nor flagged as non-whitelisted content.
+    """
     required = set(required_names)
     found: dict[str, _SourceRecord] = {}
     unknown: list[str] = []
@@ -302,6 +317,10 @@ def _scan_source_tree(root: Path, required_names: tuple[str, ...]) -> dict[str, 
                 special.append(relative)
                 continue
             if stat.S_ISDIR(info.st_mode):
+                # Top-level subtrees packaged separately (e.g. nested packing_core) are
+                # skipped outright: not recursed into, not treated as unknown content.
+                if relative_directory == "" and entry.name in skip_dirs:
+                    continue
                 child_inside_cache = inside_cache or entry.name == "__pycache__"
                 if not child_inside_cache:
                     unknown.append(relative)
@@ -1839,7 +1858,9 @@ def _execute(paths: _Paths) -> None:
     agent_sources: dict[str, _SourceRecord] | None = None
     core_sources: dict[str, _SourceRecord] | None = None
     try:
-        agent_sources = _scan_source_tree(paths.agent_dir, _AGENT_FILES)
+        agent_sources = _scan_source_tree(
+            paths.agent_dir, _AGENT_FILES, skip_dirs=frozenset({"packing_core"})
+        )
     except _ContentError as exc:
         content_errors.append(exc)
     try:

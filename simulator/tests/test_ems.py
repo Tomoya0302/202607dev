@@ -15,8 +15,8 @@ n_per_container<=0、normalize_descriptors の軸別正規化・空入力・ゼ�
 import numpy as np
 import pytest
 
-from src.packing_core import constants, geometry
-from src.packing_core.container_space import ContainerSpace, build_container_space
+from agents.heuristic.packing_core import constants, geometry
+from agents.heuristic.packing_core.container_space import ContainerSpace, build_container_space
 
 ROUND_NDIGITS = 6
 
@@ -141,7 +141,7 @@ def _random_non_overlapping_obstacles(
 # --- 空コンテナ: cut・棚なし ------------------------------------------------------
 
 def test_generate_ems_empty_container_yields_full_inner_space():
-    from src.packing_core import ems
+    from agents.heuristic.packing_core import ems
 
     space = _empty_space()
     result = ems.generate_ems(space, placed_aabbs=[])
@@ -154,7 +154,7 @@ def test_generate_ems_empty_container_yields_full_inner_space():
 # --- FLB角に0.5^3の箱を1個配置: EMSちょうど3個 -------------------------------------
 
 def test_generate_ems_single_flb_corner_box_yields_three_ems():
-    from src.packing_core import ems
+    from agents.heuristic.packing_core import ems
 
     space = _empty_space()
     box_min = INNER_MIN_REL.copy()
@@ -194,7 +194,7 @@ def test_generate_ems_treats_shelf_as_obstacle():
     同じAABBを shelf_boxes 経由と placed_aabbs 経由で与えた場合、結果のEMS集合が
     一致するはず。
     """
-    from src.packing_core import ems
+    from agents.heuristic.packing_core import ems
 
     box_min = INNER_MIN_REL.copy()
     box_max = INNER_MIN_REL + np.array([0.5, 0.5, 0.5], dtype=np.float64)
@@ -217,8 +217,8 @@ def test_generate_ems_treats_shelf_as_obstacle():
 # --- update_ems: 非交差のEMSは保持される --------------------------------------------
 
 def test_update_ems_keeps_ems_untouched_when_no_intersection():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     space = _empty_space()
     initial = EMSBox(min_rel=INNER_MIN_REL.copy(), max_rel=INNER_MAX_REL.copy())
@@ -240,8 +240,8 @@ def test_update_ems_splits_ems_on_all_six_faces_for_interior_obstacle():
     """障害物がEMSの内部（境界に接しない）にある場合、6面切断の6個すべてが
     正体積となり、ちょうど6個の部分EMSが得られる（詳細仕様書 §4.3 の6面切断定義）。
     """
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     space = _empty_space()
     initial = EMSBox(min_rel=INNER_MIN_REL.copy(), max_rel=INNER_MAX_REL.copy())
@@ -269,8 +269,8 @@ def test_update_ems_drops_zero_or_negative_volume_sub_boxes():
     除去され、ちょうど3個の部分EMSが残る（T-009 の3EMSケースを update_ems 直接
     呼び出しで再現）。
     """
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     space = _empty_space()
     initial = EMSBox(min_rel=INNER_MIN_REL.copy(), max_rel=INNER_MAX_REL.copy())
@@ -310,8 +310,8 @@ def test_update_ems_removes_ems_contained_after_split():
     面接触のみ、非交差）。box_a は y 軸方向に [0,0.3]・[0.8,1.2] の2個へ分割され、
     後者 [0,0.8,0]-[1.5,1.2,1.6] は box_b の部分集合として完全内包される。
     """
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     space = _empty_space()
     box_a = EMSBox(
@@ -338,8 +338,8 @@ def test_update_ems_removes_ems_contained_after_split():
 # --- remove_contained: 公開APIの直接テスト --------------------------------------------
 
 def test_remove_contained_removes_fully_contained_ems():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     outer = EMSBox(
         min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
@@ -356,8 +356,8 @@ def test_remove_contained_removes_fully_contained_ems():
 
 
 def test_remove_contained_keeps_single_copy_of_exact_duplicate():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     box1 = EMSBox(
         min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
@@ -375,8 +375,8 @@ def test_remove_contained_keeps_single_copy_of_exact_duplicate():
 
 
 def test_remove_contained_keeps_ems_that_are_not_contained():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     box_a = EMSBox(
         min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
@@ -396,8 +396,8 @@ def test_remove_contained_keeps_ems_that_are_not_contained():
 
 
 def test_remove_contained_does_not_mutate_input_list():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     outer = EMSBox(
         min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
@@ -426,8 +426,8 @@ def test_update_ems_sequential_matches_generate_ems_full_rebuild():
     あわせて最終EMS集合の不変条件（正体積・内壁内包・障害物と非交差・相互内包ゼロ）も
     検証する。
     """
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     for seed in range(20):
         rng = np.random.default_rng(seed)
@@ -507,8 +507,8 @@ def _container_space_with_inner_bounds(
 
 def test_prune_min_dim_keeps_only_boxes_meeting_min_dim_on_all_axes():
     """各軸の寸法が min_dim 以上（境界=min_dimと等しい場合を含む）のEMSだけが残る。"""
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     min_dim = np.array([0.3, 0.3, 0.3], dtype=np.float64)
     keep_exact = EMSBox(
@@ -542,8 +542,8 @@ def test_prune_min_dim_keeps_only_boxes_meeting_min_dim_on_all_axes():
 
 def test_prune_min_dim_excludes_box_failing_on_any_single_axis():
     """1軸でも min_dim を下回れば、他の軸が十分でもEMSは除外される。"""
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     min_dim = np.array([0.3, 0.3, 0.3], dtype=np.float64)
     fail_x = EMSBox(
@@ -563,8 +563,8 @@ def test_prune_min_dim_excludes_box_failing_on_any_single_axis():
 
 def test_prune_min_dim_is_order_independent():
     """出力（残る集合）は入力の並び順に依存しない。"""
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     min_dim = np.array([0.3, 0.3, 0.3], dtype=np.float64)
     keep = EMSBox(
@@ -584,8 +584,8 @@ def test_prune_min_dim_is_order_independent():
 
 
 def test_prune_min_dim_does_not_mutate_input_list():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     min_dim = np.array([0.3, 0.3, 0.3], dtype=np.float64)
     keep = EMSBox(
@@ -606,8 +606,8 @@ def test_prune_min_dim_does_not_mutate_input_list():
 # --- select_topn: 並び順（z1昇順→体積降順→座標タイブレーク） ------------------------
 
 def test_select_topn_orders_by_z1_ascending():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     low_z = EMSBox(
         min_rel=np.array([0.0, 0.0, 0.1], dtype=np.float64),
@@ -629,8 +629,8 @@ def test_select_topn_orders_by_z1_ascending():
 
 
 def test_select_topn_orders_by_volume_descending_when_z1_ties():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     small = EMSBox(
         min_rel=np.zeros(3, dtype=np.float64), max_rel=np.array([0.5, 0.5, 0.5])
@@ -650,8 +650,8 @@ def test_select_topn_orders_by_volume_descending_when_z1_ties():
 
 def test_select_topn_coordinate_tiebreak_uses_min_x_when_z1_and_volume_tie():
     """z1・体積が同じ場合、次点キー min_rel[0] の昇順で決定的に並べる。"""
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     box_a = EMSBox(
         min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
@@ -674,8 +674,8 @@ def test_select_topn_coordinate_tiebreak_uses_min_x_when_z1_and_volume_tie():
 
 def test_select_topn_coordinate_tiebreak_uses_min_y_when_min_x_also_ties():
     """z1・体積・min_x が同じ場合、次点キー min_rel[1] の昇順で決定的に並べる。"""
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     box_a = EMSBox(
         min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),
@@ -699,8 +699,8 @@ def test_select_topn_coordinate_tiebreak_uses_min_y_when_min_x_also_ties():
 # --- select_topn: 打切り（N未満のときだけ切り捨て、打切り率=discarded/valid） ------------
 
 def test_select_topn_truncates_only_when_more_than_n_available():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     boxes = [
         EMSBox(
@@ -718,8 +718,8 @@ def test_select_topn_truncates_only_when_more_than_n_available():
 
 
 def test_select_topn_zero_truncation_rate_when_n_covers_all():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     boxes = [
         EMSBox(
@@ -738,7 +738,7 @@ def test_select_topn_zero_truncation_rate_when_n_covers_all():
 # --- select_topn: 空入力・n_per_container<=0 -----------------------------------------
 
 def test_select_topn_empty_input_returns_empty_with_zero_rate():
-    from src.packing_core import ems
+    from agents.heuristic.packing_core import ems
 
     result, rate = ems.select_topn([], n_per_container=5)
 
@@ -747,8 +747,8 @@ def test_select_topn_empty_input_returns_empty_with_zero_rate():
 
 
 def test_select_topn_zero_n_with_nonempty_input_returns_empty_and_full_truncation_rate():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     boxes = [
         EMSBox(
@@ -764,7 +764,7 @@ def test_select_topn_zero_n_with_nonempty_input_returns_empty_and_full_truncatio
 
 
 def test_select_topn_zero_n_with_empty_input_returns_empty_and_zero_rate():
-    from src.packing_core import ems
+    from agents.heuristic.packing_core import ems
 
     result, rate = ems.select_topn([], n_per_container=0)
 
@@ -773,8 +773,8 @@ def test_select_topn_zero_n_with_empty_input_returns_empty_and_zero_rate():
 
 
 def test_select_topn_negative_n_raises_value_error():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     boxes = [
         EMSBox(
@@ -789,8 +789,8 @@ def test_select_topn_negative_n_raises_value_error():
 
 def test_select_topn_does_not_mutate_input_list():
     """select_topn は並び替えた新規リストを返し、入力リスト自体の順序は変えない。"""
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     box_a = EMSBox(
         min_rel=np.zeros(3, dtype=np.float64),
@@ -812,8 +812,8 @@ def test_select_topn_does_not_mutate_input_list():
 # --- normalize_descriptors: shape・軸別正規化・空入力・dtype・非破壊 -------------------
 
 def test_normalize_descriptors_shape_and_dtype():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     space = _empty_space()
     boxes = [
@@ -831,8 +831,8 @@ def test_normalize_descriptors_shape_and_dtype():
 
 
 def test_normalize_descriptors_inner_min_maps_to_zero():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     space = _empty_space()
     box = EMSBox(
@@ -846,8 +846,8 @@ def test_normalize_descriptors_inner_min_maps_to_zero():
 
 
 def test_normalize_descriptors_inner_max_maps_to_one():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     space = _empty_space()
     box = EMSBox(
@@ -864,8 +864,8 @@ def test_normalize_descriptors_axes_are_normalized_independently():
     """内壁が非立方体(1.5x2.0x1.6)であることを利用し、軸ごとに異なる係数（内壁スパン）で
     正規化されることを確認する（コンテナ外寸や単一係数の流用を検出する）。
     """
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     space = _empty_space()
     box = EMSBox(
@@ -882,7 +882,7 @@ def test_normalize_descriptors_axes_are_normalized_independently():
 
 
 def test_normalize_descriptors_empty_list_shape():
-    from src.packing_core import ems
+    from agents.heuristic.packing_core import ems
 
     space = _empty_space()
 
@@ -893,8 +893,8 @@ def test_normalize_descriptors_empty_list_shape():
 
 
 def test_normalize_descriptors_does_not_mutate_inputs():
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     space = _empty_space()
     box = EMSBox(
@@ -918,8 +918,8 @@ def test_normalize_descriptors_does_not_mutate_inputs():
 
 def test_normalize_descriptors_raises_on_zero_width_container_axis():
     """内壁のいずれかの軸幅が0（縮退）の場合、0除算を隠さず ValueError を送出する。"""
-    from src.packing_core import ems
-    from src.packing_core.types import EMSBox
+    from agents.heuristic.packing_core import ems
+    from agents.heuristic.packing_core.types import EMSBox
 
     degenerate_space = _container_space_with_inner_bounds(
         inner_min_rel=np.array([0.0, 0.0, 0.0], dtype=np.float64),

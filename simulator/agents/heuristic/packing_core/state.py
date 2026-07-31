@@ -15,16 +15,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from src.packing_core import geometry
-from src.packing_core.constants import GridParams, StageParams
-from src.packing_core.container_space import (
+from . import geometry
+from .constants import GridParams, StageParams
+from .container_space import (
     ContainerSpace,
     bake_placed,
     build_container_space,
     cache_bake_placed,
 )
-from src.packing_core.ems import generate_ems, select_topn, update_ems
-from src.packing_core.types import EMSBox, ItemSpec, PlacedItem, Vec3
+from .ems import generate_ems, select_topn, update_ems
+from .types import EMSBox, ItemSpec, PlacedItem, Vec3
 
 
 @dataclass
@@ -181,8 +181,13 @@ def _build_pool(observation: dict) -> list[ItemSpec]:
     ]
 
 
-def build_state(observation: dict, init: dict) -> PackingState:
+def build_state(observation: dict, init: dict, *, compute_ems: bool = True) -> PackingState:
     """observation/init から `PackingState` をゼロから組み立てる（§4.4）。
+
+    `compute_ems=False` のとき手順5（`generate_ems`/`select_topn`）を省き `ems`/`ems_truncation`
+    を空 dict にする。heightmap 配置エンジン（HF-012）は `state.ems` を使わず自前の heightmap を
+    構築するため、後半ステップで O(n_placed²) の EMS 全再構築を毎手回すのは純粋なオーバヘッド
+    （late-game の policy 時間＝pmax を押し上げる主因）。EMS を使う経路・テストは既定 True のまま。
 
     コンテナ index は `container_list` の列挙位置として扱う（`cdict["index"]` は参照しない）。
     `init` はコンテナ形状と `optimize`/`lookahead_k` の取得元、`observation` は現在の
@@ -228,17 +233,19 @@ def build_state(observation: dict, init: dict) -> PackingState:
         bake_placed(space, placed[container_idx])
 
     # 5) EMS をステートレスに全再構築し、コンテナごとの予算で上位選択する。
+    #    compute_ems=False（heightmap 経路）ではこの O(n_placed²) 再構築を丸ごと省く。
     ems: dict[int, list[EMSBox]] = {}
     ems_truncation: dict[int, float] = {}
-    ems_top_n = StageParams().ems_top_n_per_container
-    for container_idx, space in enumerate(containers):
-        placed_aabbs = [
-            (item.aabb_min_rel, item.aabb_max_rel) for item in placed[container_idx]
-        ]
-        ems_list = generate_ems(space, placed_aabbs)
-        selected, truncation = select_topn(ems_list, ems_top_n)
-        ems[container_idx] = selected
-        ems_truncation[container_idx] = truncation
+    if compute_ems:
+        ems_top_n = StageParams().ems_top_n_per_container
+        for container_idx, space in enumerate(containers):
+            placed_aabbs = [
+                (item.aabb_min_rel, item.aabb_max_rel) for item in placed[container_idx]
+            ]
+            ems_list = generate_ems(space, placed_aabbs)
+            selected, truncation = select_topn(ems_list, ems_top_n)
+            ems[container_idx] = selected
+            ems_truncation[container_idx] = truncation
 
     # 6) pool は observation 側の pool_list から構築する。idx はプール内列挙位置（仮定A11）。
     pool = _build_pool(observation)

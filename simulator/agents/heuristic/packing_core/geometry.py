@@ -4,7 +4,7 @@
 """
 import numpy as np
 
-from src.packing_core.types import Vec3
+from .types import Vec3
 
 # oriented_size: orientation(0..5) -> (L,W,H) 3軸の並べ替えindex。詳細仕様書 §3.2 の表に対応。
 _ORIENTATION_PERM: dict[int, tuple[int, int, int]] = {

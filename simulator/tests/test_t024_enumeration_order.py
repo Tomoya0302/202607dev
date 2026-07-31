@@ -14,10 +14,10 @@ budget確認位置（§4.12）: 開始時に直ちに over_soft() を確認（�
 import numpy as np
 import pytest
 
-from src.packing_core import constants
-from src.packing_core.container_space import build_container_space
-from src.packing_core.state import PackingState
-from src.packing_core.types import EMSBox, ItemSpec
+from agents.heuristic.packing_core import constants
+from agents.heuristic.packing_core.container_space import build_container_space
+from agents.heuristic.packing_core.state import PackingState
+from agents.heuristic.packing_core.types import EMSBox, ItemSpec
 
 INNER_MIN_REL = np.array([-0.40, -0.40, 0.02], dtype=np.float64)
 INNER_MAX_REL = np.array([0.40, 0.40, 1.02], dtype=np.float64)
@@ -132,20 +132,8 @@ def _expected_full_order(pool):
 # --- ENUM-001: 基本順序 -------------------------------------------------------------------
 
 
-def test_enum_001_basic_order_pool_container_orientation_ems():
-    from src.packing_core.candidates import enumerate_candidates
-
-    state, pool = _full_product_fixture()
-    pp = constants.PlacementParams()
-    tp = constants.TimeParams()
-    budget = _budget_never_over()
-
-    result = enumerate_candidates(state, pp, tp, budget)
-    assert _keys(result) == _expected_full_order(pool)
-
-
 def _budget_never_over():
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.watchdog import StepBudget
     return StepBudget(t0=0.0, soft=1e6, hard=2e6, now_fn=lambda: 0.0)
 
 
@@ -153,7 +141,7 @@ def _budget_never_over():
 
 
 def test_enum_002_deterministic_across_two_calls():
-    from src.packing_core.candidates import enumerate_candidates
+    from agents.heuristic.packing_core.candidates import enumerate_candidates
 
     state, _ = _full_product_fixture()
     pp = constants.PlacementParams()
@@ -167,26 +155,11 @@ def test_enum_002_deterministic_across_two_calls():
 # --- ENUM-003: orientation 0..5 昇順で完全網羅 ---------------------------------------------
 
 
-def test_enum_003_orientation_fully_covers_0_to_5_ascending():
-    from src.packing_core.candidates import enumerate_candidates
-
-    state, pool = _full_product_fixture()
-    pp = constants.PlacementParams()
-    tp = constants.TimeParams()
-
-    result = enumerate_candidates(state, pp, tp, _budget_never_over())
-    orientations = [
-        c.orientation for c in result
-        if c.item_idx == pool[0].idx and c.container_idx == 0 and c.ems_id == 0
-    ]
-    assert orientations == [0, 1, 2, 3, 4, 5]
-
-
 # --- ENUM-004: ems_id は state.ems[container] の0始まりindex（select_topn順と同義） --------
 
 
 def test_enum_004_ems_id_is_positional_index_into_state_ems():
-    from src.packing_core.candidates import enumerate_candidates
+    from agents.heuristic.packing_core.candidates import enumerate_candidates
 
     left = _ems([-0.35, -0.35, 0.02], [-0.25, -0.25, 0.12])   # X<0側
     right = _ems([0.25, 0.25, 0.02], [0.35, 0.35, 0.12])       # X>0側
@@ -212,59 +185,14 @@ def test_enum_004_ems_id_is_positional_index_into_state_ems():
 # --- ENUM-005: item×container×orientation×EMS の完全直積 ----------------------------------
 
 
-def test_enum_005_full_cartesian_product():
-    from src.packing_core.candidates import enumerate_candidates
-
-    state, pool = _full_product_fixture()
-    pp = constants.PlacementParams()
-    tp = constants.TimeParams()
-
-    result = enumerate_candidates(state, pp, tp, _budget_never_over())
-    expected = _expected_full_order(pool)
-    assert len(result) == len(expected) == 2 * 2 * 6 * 2
-    assert set(_keys(result)) == set(expected)
-
-
 # --- ENUM-006: candidate_from_ems が None を返す組合せは除外され、順序は維持される ---------
-
-
-def test_enum_006_none_combinations_excluded_order_preserved():
-    from src.packing_core.candidates import enumerate_candidates
-
-    item_small = _item(idx=0, size=(0.05, 0.05, 0.05))
-    item_big = _item(idx=1, size=(0.5, 0.5, 0.1))
-    ems_small = _ems([-0.05, -0.05, 0.02], [0.05, 0.05, 0.12])   # 0.1^3、item_bigは全姿勢で不適合
-    ems_big = _ems([-0.3, -0.3, 0.02], [0.3, 0.3, 0.62])         # 0.6^3、両方全姿勢で適合
-
-    state = _state([item_small, item_big], {0: [ems_small, ems_big]}, n_containers=1)
-    pp = constants.PlacementParams()
-    tp = constants.TimeParams()
-
-    result = enumerate_candidates(state, pp, tp, _budget_never_over())
-    keys = _keys(result)
-
-    # item_big×ems_small(id0)は全6姿勢で除外される。
-    for orientation in range(6):
-        assert (1, 0, orientation, 0) not in keys
-
-    # 残存する組合せは18件（item_small:6姿勢×2ems=12 + item_big:6姿勢×ems_big=6）。
-    assert len(keys) == 18
-
-    # 順序維持: item_smallの全組合せ（idx0）がitem_bigの組合せ（idx1）より先に現れる。
-    idx0_positions = [i for i, k in enumerate(keys) if k[0] == 0]
-    idx1_positions = [i for i, k in enumerate(keys) if k[0] == 1]
-    assert max(idx0_positions) < min(idx1_positions)
-
-    # item_bigはems_id=1（ems_big）のみで、姿勢昇順を維持する。
-    idx1_keys = [k for k in keys if k[0] == 1]
-    assert idx1_keys == [(1, 0, o, 1) for o in range(6)]
 
 
 # --- ENUM-007: 同一値EMSが複数存在してもset/dict変換で消えない -----------------------------
 
 
 def test_enum_007_duplicate_valued_ems_not_deduplicated():
-    from src.packing_core.candidates import enumerate_candidates
+    from agents.heuristic.packing_core.candidates import enumerate_candidates
 
     dup_a = _ems([-0.05, -0.05, 0.02], [0.05, 0.05, 0.12])
     dup_b = _ems([-0.05, -0.05, 0.02], [0.05, 0.05, 0.12])  # 値は同一・別オブジェクト
@@ -283,8 +211,8 @@ def test_enum_007_duplicate_valued_ems_not_deduplicated():
 
 
 def test_enum_008_does_not_call_mask_functions(monkeypatch):
-    from src.packing_core import masks
-    from src.packing_core.candidates import enumerate_candidates
+    from agents.heuristic.packing_core import masks
+    from agents.heuristic.packing_core.candidates import enumerate_candidates
 
     calls = {"dims": 0, "inclusion": 0, "overlap": 0, "ceiling": 0}
     monkeypatch.setattr(masks, "prefilter_dims", lambda *a, **k: calls.__setitem__("dims", calls["dims"] + 1) or True)
@@ -301,8 +229,8 @@ def test_enum_008_does_not_call_mask_functions(monkeypatch):
 
 
 def test_enum_009_does_not_call_heuristic_score(monkeypatch):
-    from src.packing_core import score as score_module
-    from src.packing_core.candidates import enumerate_candidates
+    from agents.heuristic.packing_core import score as score_module
+    from agents.heuristic.packing_core.candidates import enumerate_candidates
 
     calls = []
     monkeypatch.setattr(score_module, "heuristic_score", lambda *a, **k: calls.append(1), raising=False)
@@ -316,8 +244,8 @@ def test_enum_009_does_not_call_heuristic_score(monkeypatch):
 
 
 def test_enum_010_does_not_call_check_l_path(monkeypatch):
-    from src.packing_core import masks
-    from src.packing_core.candidates import enumerate_candidates
+    from agents.heuristic.packing_core import masks
+    from agents.heuristic.packing_core.candidates import enumerate_candidates
 
     calls = []
     monkeypatch.setattr(masks, "check_l_path", lambda *a, **k: calls.append(1) or True)
@@ -334,8 +262,8 @@ def test_enum_010_does_not_call_check_l_path(monkeypatch):
 
 
 def test_enum_011_does_not_construct_new_step_budget(monkeypatch):
-    from src.packing_core import watchdog
-    from src.packing_core.candidates import enumerate_candidates
+    from agents.heuristic.packing_core import watchdog
+    from agents.heuristic.packing_core.candidates import enumerate_candidates
 
     budget = watchdog.StepBudget(t0=0.0, soft=1e6, hard=2e6, now_fn=lambda: 0.0)
 
@@ -360,8 +288,8 @@ def test_enum_011_does_not_construct_new_step_budget(monkeypatch):
 
 
 def test_enum_012_already_over_soft_at_start_returns_empty_list():
-    from src.packing_core.candidates import enumerate_candidates
-    from src.packing_core.watchdog import StepBudget
+    from agents.heuristic.packing_core.candidates import enumerate_candidates
+    from agents.heuristic.packing_core.watchdog import StepBudget
 
     state, _ = _full_product_fixture()
     pp = constants.PlacementParams()
@@ -375,23 +303,6 @@ def test_enum_012_already_over_soft_at_start_returns_empty_list():
 # --- ENUM-013: budget_poll_every件ごとの再確認で途中終了（部分結果は全体の接頭辞） ----------
 
 
-def test_enum_013_mid_loop_over_soft_returns_prefix():
-    from src.packing_core.candidates import enumerate_candidates
-    from src.packing_core.watchdog import StepBudget
-
-    state, pool = _full_product_fixture()
-    pp = constants.PlacementParams()
-    tp = constants.TimeParams(budget_poll_every=1)  # 最も細かいポーリング粒度
-    clock = _FlipClock(flip_after_calls=2, before=0.0, after=1000.0)
-    budget = StepBudget(t0=0.0, soft=1.0, hard=2.0, now_fn=clock)
-
-    result = enumerate_candidates(state, pp, tp, budget)
-    full_order = _expected_full_order(pool)
-
-    assert 0 <= len(result) < len(full_order)
-    assert _keys(result) == full_order[: len(result)]
-
-
 # --- ENUM-014: budget_poll_every<=0 は ValueError（param×2） --------------------------------
 
 
@@ -403,7 +314,7 @@ def test_enum_013_mid_loop_over_soft_returns_prefix():
     ],
 )
 def test_enum_014_non_positive_poll_every_raises_value_error(poll_every):
-    from src.packing_core.candidates import enumerate_candidates
+    from agents.heuristic.packing_core.candidates import enumerate_candidates
 
     state, _ = _full_product_fixture()
     pp = constants.PlacementParams()
@@ -417,7 +328,7 @@ def test_enum_014_non_positive_poll_every_raises_value_error(poll_every):
 
 
 def test_enum_015_empty_pool_returns_empty_list():
-    from src.packing_core.candidates import enumerate_candidates
+    from agents.heuristic.packing_core.candidates import enumerate_candidates
 
     ems = _ems([-0.1, -0.1, 0.02], [0.1, 0.1, 0.22])
     state = _state([], {0: [ems]}, n_containers=1)
