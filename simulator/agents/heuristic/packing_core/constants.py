@@ -257,6 +257,17 @@ HM_W_TALL = _envf("GH_HM_W_TALL", 10.0)
 HM_W_BIG = _envf("GH_HM_W_BIG", 25.0)        # 大物を先に置く選択圧（体積比例、候補一律加点）
 HM_W_SOFT_VIOL = _envf("GH_HM_W_SOFT_VIOL", 40.0)   # 非softをsoft上面に載せる減点（位置レベル。順序不変→fill保護）
 HM_W_PRIO_VIOL = _envf("GH_HM_W_PRIO_VIOL", 30.0)   # 非prioをprio上面に載せる減点
+# HF-031: 運営QA（docs/QAリスト.xlsx Q3）で摩擦係数が安定性（揺らしテスト）に関与すると判明。
+# 7SKU閉集合は is_soft=False の全SKUが lateralFriction=0.4 で固定（is_soft=True は0.6-0.8）。
+# hard-on-hard 接触（0.4×0.4）はコンテナ内壁（0.4×0.8）・hard-on-soft（0.4×0.6-0.8）より
+# 系内最低の組合せ摩擦になる。既定 0（無効、v38恒等）。ローカル揺らしtest proxy（
+# scripts/shake_proxy.py）で方向性を検証してから重みを決める。
+HM_W_HARDHARD = _envf("GH_HM_W_HARDHARD", 0.0)      # 非softを非soft上面に載せる減点（床直置きは対象外）
+# HF-032: HM_W_HARDHARD（is_soft二値×表面）は3つの頑健性チェック（符号反転・キック強度・
+# 2容器族再現）全てに失敗し棄却（findings §15.4）。本レバーは軸を変え、荷物の**形状**
+# （height/base比＝倒れやすさ）と表面摩擦（非soft品の露出上面＝系内最低摩擦0.4）を掛け合わせる。
+# 連続量（比）×低摩擦面（binary）の複合減点。既定 0（無効、v38恒等）。
+HM_W_TIPRISK = _envf("GH_HM_W_TIPRISK", 0.0)        # (height/底面最小辺)×低摩擦面着地の減点
 # HF-012 Phase H2: 非fillサブスコア（cog/placement/soft）向けの項。README 定義に沿う。
 HM_W_COG = _envf("GH_HM_W_COG", 0.3)  # 重量物を低く（cog_score）：-W_COG*mass*land（GH_HM_W_COG で上書き可）
 # soft_item_score 用：`-W_SOFT_CAP * max(headroom,0)`。正値は soft を低頭上ポケットへ誘導する。
@@ -449,6 +460,12 @@ HM_PRIO_RESERVE_GLOBAL = _envi("GH_HM_PRIO_RESERVE_GLOBAL", 0)
 # （可行な配置が見つかる確率が上がる）。代償は生成時間で、3.5倍/3.1倍になる。
 # **提出前に必ず opt 秒を確認する**（60秒超の2提出 v28/v34 はいずれも退行した）。
 HM_WIDE_BREADTH = _envi("GH_HM_WIDE_BREADTH", 0)
+# HF-033: `GH_HM_WIDE_BREADTH` は全開(strict→desperate幅14/250へ一気に切替)の二値のみで、
+# findings §4.5.1「未使用の時間予算を候補幅に振り向けられる」の連続倍率は未実装だった
+# （§12.1「幅拡大+soft違反減点の強化」候補の前提）。desperate 幅を上限に strict 幅を
+# 倍率で刻む。既定 1.0（無効、v38恒等）。findings 実測: 倍率1.5でpmax 1.45倍(6.5秒✓安全)、
+# 1.8で4.24倍(19.1秒✗condition1超過)。**1.5を超える値は性能実測なしで使わない。**
+HM_BREADTH_MUL = _envf("GH_HM_BREADTH_MUL", 1.0)
 
 # HF-022 Phase 11: 床体積ペナルティを**優先品には課さない**（既定 1 = 除外する）。
 # `GH_HM_W_FLOOR_VOL=30` は局所 fill +1.46 / np +1.9pt を出すが placement を 43.4 → 27.7 に

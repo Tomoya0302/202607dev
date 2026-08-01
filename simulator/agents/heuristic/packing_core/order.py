@@ -12,6 +12,12 @@
         例外を外へ漏らさない（内部 try/except → 複合キー順序へフォールバック）。
     composite_key_order(items) -> list[int]
         現行 `Agent.optimize` と同一の (体積降順→重量降順→入力位置) 並べ替え。seed[0]。
+    plan_order_forward_sim(item_list, container_list, budget_s) -> list[int]
+        全可視 heightmap 貪欲の前方シミュで順序を「生成」する（v38 の既定経路）。
+    search_order_composite(item_list, container_list, budget_s, post_fn, window_k) -> list[int]
+        方策3（HF-030）: 忠実 window=`window_k` リプレイ（`_replay_arrival_window`、実
+        `decide_placement` 使用）を評価器に、`post_fn` 適用後の順序を composite 目的
+        （fill+cog 実効重み）で GRASP シード＋山登り探索する。既定 OFF（`GH_ORDER_SEARCH`）。
 """
 from __future__ import annotations
 
@@ -367,6 +373,215 @@ def plan_order_beam(item_list: list[dict], container_list: list, budget_s: float
         return greedy
     except Exception:
         return greedy
+
+
+# --- 忠実 window リプレイ探索（方策3, HF-030）------------------------------------------
+#
+# `plan_order_forward_sim` は全可視(pool=全件)で heightmap 自身に選ばせて順序を「生成」する
+# 機構であり、入力 `item_list` の並びを評価対象として使わない（`_build_models_ranked` が
+# pool を体積降順に再ソートするため、入力順は同一体積の SKU 内タイブレークにしか影響しない）。
+# よって「候補順序を近傍操作で探索する」用途には、実 policy() と同じ look_ahead=`window_k`
+# （課題A は 1）で `order` を厳密に逐次消費する評価器が要る。実測: 41品目/2容器で
+# window=1 の全リプレイは約2秒（plan_order_forward_sim の1リプレイ約8〜22秒の1/4〜1/10）。
+# 現行 heightmap エンジン（`decide_placement`、`ContainerHeightModel` は毎回 `placed` から
+# 高さを再導出し `space.height` を読まない）を使うので `containers` は複数回のリプレイ間で
+# 安全に共有できる（読み取り専用）。
+
+
+def _fresh_search_containers(container_list: list, window_k: int):
+    """探索用の空コンテナ一覧と空 placed dict を1度だけ構築する（複数リプレイで共有）。"""
+    from .state import build_state  # 局所import（plan_order_forward_sim と同じ慣例）
+
+    cs = [{**dict(c), "packed_items": []} for c in container_list]
+    obs = {"optimize": True, "lookahead_k": window_k,
+           "depth_map": np.zeros((1, 1, 1), dtype=np.float32),
+           "container_list": cs, "pool_list": []}
+    init = {"optimize": True, "lookahead_k": window_k, "container_list": cs}
+    st = build_state(obs, init, compute_ems=False)
+    return st.containers, {c: [] for c in range(len(st.containers))}
+
+
+def _replay_arrival_window(
+    order: list[int], containers, specs: dict[int, dict], window_k: int, outer_budget,
+) -> dict[int, list[PlacedItem]]:
+    """`order`（公式index列）を look_ahead=`window_k` の可視窓で逐次消費し、現行
+    `decide_placement`（heightmap）で貪欲配置する忠実リプレイ。実 policy() の消費過程
+    （課題A は window_k=1）をそのまま模す評価器。EMS は使わない（heightmap は state.ems
+    を参照しない、HF-012）。`outer_budget.over_soft()` で anytime 停止する。
+
+    Returns:
+        dict[int, list[PlacedItem]]: container_idx → 配置済み荷物一覧（空コンテナ開始）。
+    """
+    from .heightmap import decide_placement  # 局所import（plan_order_forward_sim と同じ慣例）
+
+    n_cont = len(containers)
+    placed: dict[int, list[PlacedItem]] = {c: [] for c in range(n_cont)}
+    arrival = list(order)
+    pos = 0
+    window: list[int] = []
+    meta = {"optimize": True, "lookahead_k": window_k}
+    while True:
+        if outer_budget.over_soft():
+            break
+        while len(window) < window_k and pos < len(arrival):
+            window.append(arrival[pos])
+            pos += 1
+        if not window:
+            break
+        pool = []
+        specs_ok = True
+        for j, official_idx in enumerate(window):
+            spec_j = specs.get(official_idx)
+            if spec_j is None:
+                specs_ok = False
+                break
+            pool.append(ItemSpec(
+                idx=j, size=spec_j["size"], weight=spec_j["weight"], kind=None,
+                is_soft=spec_j["is_soft"], is_priority=spec_j["is_priority"],
+            ))
+        if not specs_ok:
+            break
+        state = PackingState(
+            containers=containers, placed=placed, pool=pool,
+            ems={}, ems_truncation={}, meta=meta,
+        )
+        step_budget = StepBudget(t0=time.monotonic(), soft=6.0, hard=8.0)
+        res = decide_placement(state, step_budget)
+        if res is None:
+            break
+        j, cidx, pos_rel, orn = res
+        if j < 0 or j >= len(window):  # 防御: pool 位置は 0..len(window)-1
+            break
+        official_idx = window[j]
+        spec = specs[official_idx]
+        osize = np.asarray(oriented_size(spec["size"], orn), dtype=np.float64)
+        half = osize / 2.0
+        space = containers[cidx]
+        placed[cidx].append(PlacedItem(
+            pos_world=rel_to_world(pos_rel, space), orn_quat=_IDENTITY_QUAT,
+            size=spec["size"], weight=spec["weight"],
+            is_soft=spec["is_soft"], is_priority=spec["is_priority"],
+            aabb_min_rel=pos_rel - half, aabb_max_rel=pos_rel + half,
+        ))
+        window.pop(j)
+    return placed
+
+
+def search_order_composite(
+    item_list: list[dict], container_list: list, budget_s: float,
+    post_fn=None, window_k: int = 1,
+) -> list[int]:
+    """post_fn 適用後の順序を composite 目的で最大化する順序を、忠実 window リプレイ
+    （`_replay_arrival_window`）を評価器にした GRASP シード＋決定論的マルチスタート
+    山登りで探索する（方策3、HF-030）。
+
+        J = W_FILL·(置いた体積/容器体積)·100 + W_COG·(1 − z_com/H)·100
+
+    `plan_order_forward_sim`（fill 目的の貪欲順序生成）と実効重み・z_com 定義は共通
+    （`GH_ORDER_W_FILL`/`GH_ORDER_W_COG`、既定 0.268/0.261）。**非退行フロア**:
+    seed に `plan_order_forward_sim` の出力（v38 base）を必ず含み、探索はこれを
+    下回る順序を採用しない（best の初期値）。
+
+    `post_fn` は最終提出直前に適用されるレバー再並べ替え（例: `agent.py::_post`）。
+    レバーが結果を大きく変える（TALL_SHIFT 等）ため、**J は `post_fn(order)` で評価する**
+    （post_fn 適用前の順序を評価すると実際に提出される順序とズレる）。post_fn が
+    None なら恒等関数を使う。
+
+    Args:
+        item_list: `agent.optimize()` の item_list。
+        container_list: `self.container_list`（init_states 由来のコンテナ形状一覧）。
+        budget_s: 全体時間予算 [s]。
+        post_fn: 評価直前に適用する順序後処理（既定 None=恒等）。
+        window_k: 忠実リプレイの可視窓幅（実配置と揃える。課題A は既定 1）。
+
+    Returns:
+        list[int]: 全 index を過不足なく1回ずつ含む順列（post_fn 適用前の base）。
+        呼び出し側が `post_fn` を再適用してから提出することを前提とする
+        （agent.py: `_post(search_order_composite(...))`）。
+    """
+    identity = (lambda order: order) if post_fn is None else post_fn
+    fallback = composite_key_order(item_list)
+    try:
+        n = len(item_list)
+        if n == 0 or not container_list:
+            return fallback
+        specs = _specs_by_index(item_list)
+        metrics = _item_metrics(item_list)
+        seeds = _build_seed_orders(metrics)
+        if not seeds:
+            return fallback
+
+        start = time.monotonic()
+        deadline = start + max(0.0, float(budget_s) - ORDER_TIME_RESERVE_S)
+
+        # 非退行フロア: 現行 v38 の base（plan_order_forward_sim）を必ずシードへ含める。
+        # 予算の一部（最大15%）だけ使う。以降の忠実探索がこれを一度も上回れなくても
+        # best の初期値として残る。
+        greedy_budget = max(5.0, min(budget_s * 0.15, deadline - time.monotonic()))
+        greedy_base = plan_order_forward_sim(item_list, container_list, greedy_budget)
+        if greedy_base not in seeds:
+            seeds = [greedy_base] + seeds
+
+        w_fill = _envf_o("GH_ORDER_W_FILL", 0.268)
+        w_cog = _envf_o("GH_ORDER_W_COG", 0.261)
+        _cv = 0.0
+        for _c in container_list:
+            _t = float(_c["thickness"])
+            _cv += ((float(_c["length"]) - 2 * _t) * (float(_c["width"]) - 2 * _t)
+                    * (float(_c["height"]) - 2 * _t))
+        _cv = max(_cv, 1e-9)
+        _hz = max((float(_c["height"]) for _c in container_list), default=1.0)
+
+        containers0, _ = _fresh_search_containers(container_list, window_k)
+        outer_budget = StepBudget(t0=start, soft=max(0.0, budget_s - ORDER_TIME_RESERVE_S),
+                                   hard=max(1.0, budget_s))
+
+        def _eval(order: list[int]) -> float:
+            final_order = identity(order)
+            placed = _replay_arrival_window(final_order, containers0, specs, window_k, outer_budget)
+            fill, cog = _fill_and_cog(placed, containers0)
+            return w_fill * fill * 100.0 + w_cog * (1.0 - cog / _hz) * 100.0
+
+        # 1) 全シード評価（少なくとも seed[0]=greedy_base は必ず評価）。締切超過で打ち切り。
+        evaluated = []
+        for i, order in enumerate(seeds):
+            evaluated.append((order, _eval(order)))
+            if i > 0 and time.monotonic() >= deadline:
+                break
+        if not evaluated:
+            evaluated = [(greedy_base, _eval(greedy_base))]
+        evaluated.sort(key=lambda t: t[1], reverse=True)
+        best_order, best_j = evaluated[0]
+        anchors = evaluated[: max(1, BEAM_W)]
+
+        # 2) 決定論的マルチスタート best-improvement 山登り（固定シード rng）。
+        rng = np.random.default_rng(20260801)
+        active = 0
+        current_order, current_j = anchors[active]
+        stagnant = 0
+        for it in range(ORDER_MAX_ITERS):
+            if time.monotonic() >= deadline:
+                break
+            neighbor = _apply_move(current_order, it % 3, rng)
+            j = _eval(neighbor)
+            if j > current_j:
+                current_order, current_j = neighbor, j
+                stagnant = 0
+                if j > best_j:
+                    best_order, best_j = neighbor, j
+            else:
+                stagnant += 1
+                if stagnant >= ORDER_STAGNANT_RESTART and len(anchors) > 1:
+                    active = (active + 1) % len(anchors)
+                    current_order, current_j = anchors[active]
+                    stagnant = 0
+
+        # 防御: 完全順列であることを保証（万一崩れていれば fallback）。
+        if sorted(best_order) != sorted(fallback):
+            return fallback
+        return [int(x) for x in best_order]
+    except Exception:
+        return fallback
 
 
 def _sorted_indices(metrics: list[dict], key) -> list[int]:

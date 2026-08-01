@@ -556,8 +556,39 @@ class Agent:
                 return 0 if prio else bucket.get(int(i), nb - 1)  # 優先は前方固定
             return sorted(order, key=_key)  # 安定ソート：バケツ内は fill 順維持
 
+        def _interleave_hard_order(order):
+            # HF-034: 順序レベルの摩擦対策（findings §17 の続き）。SOFT_SHIFT はカテゴリ全体を
+            # 前後にずらすだけなので、hard品の連続（=hard-on-hard接触の起きやすい構成）自体は
+            # 減らせない（二値シフトはSOFT_SHIFTと数学的に重複するため試さなかった、§18）。
+            # 本関数は「hard品が GH_HARD_MAX_RUN 個連続したら、残りの列から直近のsoft品を
+            # 1個前へ引き出す」構造的に異なる操作。全index を過不足なく1回ずつ保つ
+            # （pending から pop して result へ append するだけなので契約は自動的に保たれる）。
+            # 既定 0（無効、v38恒等）。
+            max_run = int(os.environ.get("GH_HARD_MAX_RUN", "2") or "2")
+            if max_run <= 0:
+                return order
+            soft = {int(it["index"]) for it in item_list if it.get("is_soft")}
+            pending = list(order)
+            result = []
+            run = 0
+            while pending:
+                idx = int(pending[0])
+                if idx not in soft and run >= max_run:
+                    found = None
+                    for j in range(1, len(pending)):
+                        if int(pending[j]) in soft:
+                            found = j
+                            break
+                    if found is not None:
+                        result.append(pending.pop(found))
+                        run = 0
+                        continue
+                result.append(pending.pop(0))
+                run = 0 if idx in soft else run + 1
+            return result
+
         def _post(order):
-            return _heavy_low_order(_soft_shift_order(_reorder_quality(order)))
+            return _interleave_hard_order(_heavy_low_order(_soft_shift_order(_reorder_quality(order))))
 
         if os.environ.get("GH_ORDER_PLAN", "1") == "0" or not getattr(self, "container_list", None):
             # HF-022: 品質目的の並べ替え(_post)は**計画経路にだけ**適用する。この分岐は
@@ -567,6 +598,15 @@ class Agent:
             # 本番は常に container_list があるため提出時の挙動は変わらない。
             return composite_key_order(item_list)
         budget_s = max(10.0, float(self.time_params.optimize_stop) - 30.0)
+        # 方策3（HF-030）: 忠実 window=1 リプレイ（実 decide_placement 使用）を評価器にした
+        # GRASP＋山登り順序探索。既定 OFF（GH_ORDER_SEARCH=0）で v38 と挙動不変。
+        # J は _post 適用後の順序で評価する（レバーが結果を大きく変えるため、post_fn 適用前を
+        # 評価すると実際の提出順序とズレる）。非退行フロア: seed に plan_order_forward_sim の
+        # 出力（v38 base）を必ず含むため、探索がこれを一度も上回れなくても劣化しない。
+        if os.environ.get("GH_ORDER_SEARCH", "0") != "0":
+            from .packing_core.order import search_order_composite
+            return _post(search_order_composite(
+                item_list, self.container_list, budget_s, post_fn=_post))
         if os.environ.get("GH_ORDER_BEAM", "0") != "0":
             from .packing_core.order import plan_order_beam
             return _post(plan_order_beam(item_list, self.container_list, budget_s))

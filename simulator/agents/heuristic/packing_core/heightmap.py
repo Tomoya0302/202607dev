@@ -37,6 +37,7 @@ from .constants import (
     HM_HEAVY_CEIL,
     HM_HEAVY_CEIL_Q,
     HM_PRIO_RESERVE_GLOBAL,
+    HM_BREADTH_MUL,
     HM_WIDE_BREADTH,
     HM_FLOOR_VOL_SKIP_PRIO,
     HM_MAX_ROUGH,
@@ -60,7 +61,9 @@ from .constants import (
     HM_W_PRIO_CONTAINER_PENALTY,
     HM_W_PRIO_HIGH,
     HM_W_PRIO_VIOL,
+    HM_W_HARDHARD,
     HM_W_SLAB,
+    HM_W_TIPRISK,
     HM_W_SOFT_CAP,
     HM_W_SOFT_VIOL,
     HM_W_TALL,
@@ -470,6 +473,27 @@ def _layer_candidates(
         score = score - HM_W_SOFT_VIOL * soft_hit.astype(np.float64)
     if not is_prio:
         score = score - HM_W_PRIO_VIOL * prio_hit.astype(np.float64)
+    if HM_W_HARDHARD != 0.0 and not upper and not is_soft:
+        # HF-031: 摩擦仮説の検証用（docs/findings_2026-07.md §15）。7SKU閉集合は
+        # is_soft=False の全SKUが lateralFriction=0.4 固定（is_soft=True は0.6-0.8）で、
+        # hard-on-hard 接触が系内最低の組合せ摩擦になる（コンテナ内壁は0.8固定）。
+        # 床（bare floor）は摩擦0.8で対象外、soft上面は既に HM_W_SOFT_VIOL が扱うので、
+        # 「非soft品が既存の非soft品の上面に着地する」窓だけを減点する。既定 0（無効）。
+        floor_base = np.asarray(model.space.floor_z, dtype=np.float64) + HM_WALL_CLEARANCE
+        on_bare_floor = land <= (_sliding_max2d(floor_base, wx, wy) + 1e-6)
+        hard_surface_hit = (~soft_hit) & (~on_bare_floor)
+        score = score - HM_W_HARDHARD * hard_surface_hit.astype(np.float64)
+    if HM_W_TIPRISK != 0.0 and not upper:
+        # HF-032: HM_W_HARDHARD の後継（findings §15.4で棄却）。荷物の形状（倒れやすさ）を
+        # 表面摩擦と掛け合わせる。tip_ratio = 高さ / 底面最小辺（大きいほど倒れやすい）。
+        # 低摩擦面（非soft品の露出上面。床0.8・soft0.6-0.8より低い0.4）へ着地する窓を、
+        # is_soft を問わず tip_ratio に比例して減点する。既定 0（無効）。
+        floor_base2 = np.asarray(model.space.floor_z, dtype=np.float64) + HM_WALL_CLEARANCE
+        on_bare_floor2 = land <= (_sliding_max2d(floor_base2, wx, wy) + 1e-6)
+        hard_surface_hit2 = (~soft_hit) & (~on_bare_floor2)
+        base_min = max(min(float(osize[0]), float(osize[1])), 1e-6)
+        tip_ratio = float(osize[2]) / base_min
+        score = score - HM_W_TIPRISK * tip_ratio * hard_surface_hit2.astype(np.float64)
     if _H2_COG:
         # cog_score: 重量物ほど低く着地させる。
         score = score - HM_W_COG * mass * land
@@ -701,8 +725,15 @@ def _build_models_ranked(state, budget):
             reserve_soft = HM_SOFT_RESERVE * max(h_vol, SOFT_TOTAL["hmax"])
     # HF-027: 既定は strict 幅のみ（従来どおり）。GH_HM_WIDE_BREADTH=1 で
     # HM_CASCADE 第3段の幅（14 / 250）で生成し、全段に広い候補集合を渡す。
+    # HF-033: GH_HM_BREADTH_MUL は desperate 幅を上限に strict 幅を連続倍率で刻む
+    # （WIDE_BREADTH の二値と異なり中間の幅を作れる、findings §4.5.1/§12.1）。
     if HM_WIDE_BREADTH:
         per_bin, coarse = HM_CASCADE[-1][4], HM_CASCADE[-1][5]
+    elif HM_BREADTH_MUL != 1.0:
+        per_bin = min(HM_CASCADE[-1][4],
+                      max(HM_STRAT_PER_BIN, int(round(HM_STRAT_PER_BIN * HM_BREADTH_MUL))))
+        coarse = min(HM_CASCADE[-1][5],
+                     max(HM_COARSE_TOPK, int(round(HM_COARSE_TOPK * HM_BREADTH_MUL))))
     else:
         per_bin, coarse = HM_STRAT_PER_BIN, HM_COARSE_TOPK
     prio_exists = any(bool(c.is_prioritized) for c in state.containers)
