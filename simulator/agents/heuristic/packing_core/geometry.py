@@ -143,6 +143,30 @@ def quat_to_matrix(q: np.ndarray) -> np.ndarray:
     )
 
 
+def leaning_deg_from_quat(quat: np.ndarray) -> float:
+    """姿勢クォータニオンから「軸整列6姿勢のいずれからの逸脱角」[deg] を返す。
+
+    直方体が6つの正準姿勢（`ORNS`）のどれかに一致していれば0度、そこから傾く（転倒し
+    かけている）ほど大きくなる、姿勢インデックスに依存しない連続量。回転行列 `R` の
+    第3行（world Z への射影）で絶対値最大の列を「現在いちばん上を向いているローカル軸」
+    とみなし、それが world Z とどれだけずれているかを測る:
+    `tilt = degrees(acos(|R[2, argmax_i |R[2,i]|]|))`。
+
+    正準姿勢（90度刻みの回転）では必ずどこかの列が±1になるため厳密に0度になる
+    （＝横倒しなど意図した姿勢を誤って「傾いている」と判定しない）。
+
+    Args:
+        quat: クォータニオン。PyBullet順 `(x, y, z, w)`。shape (4,)。
+
+    Returns:
+        逸脱角 [deg]、範囲 `[0, 90]` の Python float。
+    """
+    rot = quat_to_matrix(quat)
+    col = int(np.argmax(np.abs(rot[2, :])))
+    cos_tilt = float(np.clip(abs(rot[2, col]), -1.0, 1.0))
+    return float(np.degrees(np.arccos(cos_tilt)))
+
+
 def rotated_aabb(center: Vec3, size: Vec3, quat: np.ndarray) -> tuple[Vec3, Vec3]:
     """回転後の8頂点から AABB を計算する。
 

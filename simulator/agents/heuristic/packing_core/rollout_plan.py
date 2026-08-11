@@ -119,6 +119,19 @@ class _RolloutEnv:
                     return out
                 if (not is_desp) and c.features.get("soft_nonflat"):
                     continue
+                # HF-035/HF-037: 実 decide_placement（heightmap.py）と同じ「階段制約・高低差
+                # ゲートに触れた候補はdesperate段まで解禁しない」を再現する。この skip が
+                # 無いと（旧実装）、v50/v52 の階段制約下でロールアウトが実際より早い段階で
+                # stair_bad 候補を受理してしまい、本番 policy() 経路と食い違う
+                # （real_000 実測で np 0.7561→0.5854 まで乖離、findings §27.3/§28 参照）。
+                if (not is_desp) and c.features.get("stair_bad"):
+                    continue
+                if (not is_desp) and c.features.get("rough_bad"):
+                    continue
+                if (not is_desp) and c.features.get("soft_bad"):
+                    continue
+                if (not is_desp) and c.features.get("prio_bad"):
+                    continue
                 m = models[c.container_idx]
                 if HM._feasible(state, m, c, incl_m, pp, sr_min, sc_min):
                     out.append(HM._densify(state, m, c, incl_m, pp, sr_min, sc_min, _budget()))
@@ -177,9 +190,58 @@ class _RolloutEnv:
         except Exception: pass
 
 
+def _soft_violation_count(e) -> int:
+    """沈降後AABBから、非soft品がsoft品の直上に乗っている（下敷き）組数を数える
+    （`scripts/bench_run.py::_quality_proxies` と同型の幾何近似、findings §2.1「未積載も
+    違反」ではなくこちらは接触判定のみ）。M候補の再選択（`_rollout`）が「置ける数」だけを
+    見てsoft安全性を無視する問題（HF-041、findings §29で発見: real_000実測でsoft_proxy
+    100→46・違反0→7）を防ぐため、`_score`のペナルティ項として使う。"""
+    placed = []
+    for container in e.env.container_manager.containers:
+        for it in container.packed_items:
+            pos, orn = it.get_pose(e.env.client)
+            if pos is None:
+                continue
+            half = 0.5 * np.abs(
+                np.array(e.env.client.getMatrixFromQuaternion(orn)).reshape(3, 3)
+            ) @ np.array([it.length, it.width, it.height], dtype=np.float64)
+            placed.append({"lo": np.array(pos) - half, "hi": np.array(pos) + half,
+                            "is_soft": bool(it.is_soft)})
+    viol = 0
+    for target in placed:
+        if not target["is_soft"]:
+            continue
+        for other in placed:
+            if other is target or other["is_soft"]:
+                continue
+            if other["lo"][0] >= target["hi"][0] or other["hi"][0] <= target["lo"][0]:
+                continue
+            if other["lo"][1] >= target["hi"][1] or other["hi"][1] <= target["lo"][1]:
+                continue
+            if abs(float(other["lo"][2]) - float(target["hi"][2])) > 0.02:
+                continue
+            if float(other["lo"][2] + other["hi"][2]) <= float(target["lo"][2] + target["hi"][2]):
+                continue
+            viol += 1
+            break
+    return viol
+
+
+# HF-041: 1違反あたりのペナルティ（'count'モードの単位＝荷物1個ぶん、既定3個分＝
+# 「2個余分に置けても1個下敷きにするなら割に合わない」という比率。'vol'モードは平均的な
+# 荷物体積（7SKU平均、findings §3）を1個分の目安として換算する。
+_SOFT_VIOL_PENALTY_COUNT = float(os.environ.get("GH_ROLLOUT_SOFT_PENALTY", "3.0"))
+_SOFT_VIOL_PENALTY_VOL = float(os.environ.get("GH_ROLLOUT_SOFT_PENALTY_VOL", "0.18"))
+
+
 def _score(e, obj):
-    """rollout 目的関数。obj='vol' なら配置総体積（=fill に比例）、それ以外は num_placed。"""
-    return e.volume if obj == "vol" else e.n_placed
+    """rollout 目的関数。obj='vol' なら配置総体積（=fill に比例）、それ以外は num_placed。
+    HF-041: soft下敷き違反を減点する（既定 penalty>0、`GH_ROLLOUT_SOFT_PENALTY=0`で無効化可）。"""
+    base = e.volume if obj == "vol" else e.n_placed
+    penalty = _SOFT_VIOL_PENALTY_VOL if obj == "vol" else _SOFT_VIOL_PENALTY_COUNT
+    if penalty <= 0.0:
+        return base
+    return base - penalty * _soft_violation_count(e)
 
 
 def _forward_greedy(e, cap, obj):

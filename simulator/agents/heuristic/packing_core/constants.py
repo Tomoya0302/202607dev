@@ -257,6 +257,15 @@ HM_W_TALL = _envf("GH_HM_W_TALL", 10.0)
 HM_W_BIG = _envf("GH_HM_W_BIG", 25.0)        # 大物を先に置く選択圧（体積比例、候補一律加点）
 HM_W_SOFT_VIOL = _envf("GH_HM_W_SOFT_VIOL", 40.0)   # 非softをsoft上面に載せる減点（位置レベル。順序不変→fill保護）
 HM_W_PRIO_VIOL = _envf("GH_HM_W_PRIO_VIOL", 30.0)   # 非prioをprio上面に載せる減点
+# 2026-08-11、ユーザー仮説の検証（scripts/soft_prio_cluster_diag.py）: v52既定でsoft品の
+# 支持内訳は床87%・soft上13%・hard上5%だが、soft-on-softだけ支持多角形proxy
+# （Phase 0で本番cog/stability相関 r=+0.6〜0.8を確認済み、docs/HANDOFF.md参照）のmarginが
+# 頻繁に負（13件中4件）になる一方、soft-on-floor/soft-on-hardはほぼ全件正常だった。
+# HM_W_SOFT_VIOL（非softをsoft上に載せる減点）とは逆方向——soft品自身がsoft面に
+# 着地する候補を減点し、floor/hardへの着地を選好させる。既定0（無効）。
+# HM_SOFT_VETO系の「常に排除」ではなく連続減点（veto=0での過去の教訓どおり、
+# 唯一の選択肢しかない局面では desperate 段で従来通り許可されるべきため）。
+HM_W_SOFT_ON_SOFT = _envf("GH_HM_W_SOFT_ON_SOFT", 0.0)
 # HF-031: 運営QA（docs/QAリスト.xlsx Q3）で摩擦係数が安定性（揺らしテスト）に関与すると判明。
 # 7SKU閉集合は is_soft=False の全SKUが lateralFriction=0.4 で固定（is_soft=True は0.6-0.8）。
 # hard-on-hard 接触（0.4×0.4）はコンテナ内壁（0.4×0.8）・hard-on-soft（0.4×0.6-0.8）より
@@ -268,8 +277,20 @@ HM_W_HARDHARD = _envf("GH_HM_W_HARDHARD", 0.0)      # 非softを非soft上面に
 # （height/base比＝倒れやすさ）と表面摩擦（非soft品の露出上面＝系内最低摩擦0.4）を掛け合わせる。
 # 連続量（比）×低摩擦面（binary）の複合減点。既定 0（無効、v38恒等）。
 HM_W_TIPRISK = _envf("GH_HM_W_TIPRISK", 0.0)        # (height/底面最小辺)×低摩擦面着地の減点
+# HF-037: ユーザー指摘（「soft品起因で積み上げ中の転倒が起きているのでは」）の検証
+# （docs/findings_2026-07.md §25）から得た新レバー。`scripts/tilt_diag.py` による n=99×3族の
+# 診断で、(1) 支持面が soft な荷物は hard 支持の約5〜9倍傾く、(2) soft の接触コンプライアンス
+# （contactStiffness/contactDamping）を無効化すると傾きが約半分に減り fill も回復する
+# （3族全てで有意）という**因果**を確認した。本レバーはこの機構を突く: 既に傾いている soft品の
+# 上面へ新規荷物を着地させる窓を、傾き角（PlacedItem.orn_quat から computed_leaning_deg で算出、
+# 軸整列6姿勢いずれからの逸脱角）に比例して減点する。傾いていない soft 上面（角度0）は対象外。
+# 既定 0（無効、v43恒等）。**未検証・提出候補ではない**（診断専用レバーとしてscreen中）。
+HM_W_TILT_SOFT = _envf("GH_HM_W_TILT_SOFT", 0.0)
 # HF-012 Phase H2: 非fillサブスコア（cog/placement/soft）向けの項。README 定義に沿う。
-HM_W_COG = _envf("GH_HM_W_COG", 0.3)  # 重量物を低く（cog_score）：-W_COG*mass*land（GH_HM_W_COG で上書き可）
+HM_W_COG = _envf("GH_HM_W_COG", 0.1)  # 重量物を低く（cog_score）：-W_COG*mass*land（GH_HM_W_COG で上書き可）
+# v50でベイク（2026-08-09、findings §21.14-21.15）。0.3（旧既定）はv16でnpゲートを割って
+# 失敗したが、STAIR_SLACKが作るnpの余裕（0.625→0.637）と組み合わせた0.1は本番で成功
+# （Public 63.14、旧最良v43の61.5から+1.64）。
 # soft_item_score 用：`-W_SOFT_CAP * max(headroom,0)`。正値は soft を低頭上ポケットへ誘導する。
 # HF-022 v22 で **−0.5 へベイク（符号反転）**。根拠は v15 の本番実測が与える偏微分:
 #   v15 は W_SOFT_CAP=+4.0 で np 0.5878→0.5871・fill −0.02 と **np/fill をほぼ完全に保ったまま**
@@ -328,6 +349,17 @@ HM_W_ZBLOCK = _envf("GH_HM_W_ZBLOCK", 0.0)
 HM_LOOKAHEAD_K = _envi("GH_HM_LOOKAHEAD_K", 0)     # 評価する実行可能候補の数（0=無効）
 HM_LOOKAHEAD_PROBE = _envi("GH_HM_LOOKAHEAD_PROBE", 80)  # 生存を数える他候補の数
 
+# HF-037: **柱一致度による再選択**（findings §23-24）。既定 0 = 無効（v43 恒等）。
+# `lookahead_k>1`（課題B、`optimize=False`）だけで意味を持つ設計——課題Aは pool が常に
+# 1個なので `state.meta["lookahead_k"]<=1` が必ず成り立ち、コード自身のガードにより
+# 本レバーは絶対に発火しない（v43の実績には理論上一切触れない、findings §23.2 で確認済み）。
+# 動機: `HM_LOOKAHEAD_K`（到達可能性生存数で再選択）を課題Bで初めて正しく検証したところ
+# （§23.3）、機構は正常に発火するが既存スコアと一度も選択が食い違わなかった（クリーンな
+# 否定結果）。既存スコアは奥行き/高さ項を通じて到達可能性と強く相関しているため、同じ情報の
+# 言い換えでは再選択の余地がない。本レバーは既存スコアに無い情報（候補の底面が既配置の
+# **単一の荷物の上面とどれだけ一致するか**＝トーテムポール構成法の「柱」概念）を使う。
+HM_COLUMN_K = _envi("GH_HM_COLUMN_K", 0)     # 評価する実行可能候補の数（0=無効）
+
 # HF-022 Phase 6: スラブ跨ぎのコスト。既定 0.0 = v25 恒等。
 # 診断（scripts/diag_slab.py, 修正ベンチ dr10 × v24/v25）で分かった構造の破れ:
 #   - スラブ内の奥→手前は **守られている**（整列 ρ −0.55、87% のスラブで明確）＝W_DEPTH が機能
@@ -351,6 +383,52 @@ HM_W_SLAB = _envf("GH_HM_W_SLAB", 0.0)
 # 壁積みにならず却下」）ので制約として実装する。
 # 値は許容する後戻り量（格子セル数）。0 なら厳密に単調、2 なら 2セル(=4cm)まで後戻りを許す。
 HM_FRONTIER_SLACK = _envi("GH_HM_FRONTIER_SLACK", -1)
+
+# HF-035: **z を見る階段制約**（`HM_FRONTIER_SLACK` の正しい版）。既定 0.0 = 無効（v43 恒等）。
+#
+# 機構（2026-08-02 に実測で確定、findings §19）: 全提出30件・ローカル60課題の**すべて**が
+# 「候補ゼロ → emergency action → check_transport_path 失敗」でエピソード打ち切りになっており、
+# np≈0.63 は詰め込み限界ではなく**生存率**である。打ち切り時点のコンテナは床被覆 66〜79%・
+# 天面平均 1.1m/1.61m で、幾何的に空いて inclusion を通る位置が 16〜68 個あるのに、
+# **そのすべてが公式 check_transport_path で不合格**だった（n=6、合格 0/253）。
+# つまり壁は体積ではなく到達可能性で、扉側に積み上げた壁が奥の自由空間を封鎖している。
+#
+# 公式の搬入は「扉(y=-W/2)から目標yまで一定高さで水平スイープ → 目標yでx方向へスイープ」
+# なので、目標へ届く条件は「同じxレーンで、より手前(yが小)のセルがスイープ帯を侵さない」。
+# ⇒ **各xレーンで、天面高が扉へ向かって単調非増加**なら全ての将来配置が到達可能になる。
+# これは帰納的に保つべき不変条件であり、新しい配置の**結果の天面 top_z** が
+# 「同レーンの、より奥に残っているセルの最小天面」を超えないことと同値。
+#
+# `HM_FRONTIER_SLACK`（Phase 7）は同じ意図だったが**高さを見ない**ため、あるレーンに1個
+# 置いた時点でそのレーンの同じ深さへの積み上げまで禁止してしまい fill 32.57→10.67 に壊れた
+# （findings §8.2）。本項は制約を (レーン × 高さ) で張るのでその欠陥がない。
+#
+# 値は許容する超過量[m]。0.0=無効、正なら「奥の最小天面 + slack」まで超過を許す。
+# 0.02 のような小さい値は厳密な階段、0.30 なら1荷物ぶんの後戻りを許す緩い階段。
+# 制約に触れた候補は捨てずに `stair_bad` フラグを立て、カスケード最終段（desperate）でのみ
+# 許可する（`soft_nonflat` と同じ扱い）。これにより「階段を守れないなら投了」にはならない。
+HM_STAIR_SLACK = _envf("GH_HM_STAIR_SLACK", 0.30)  # v50でベイク（2026-08-09）。旧既定0.0=v43恒等
+
+# 階段制約に触れた候補へ与える減点。他の全項の合計より十分大きい定数を選び、
+# 「制約を守る候補が1つでもあれば必ずそちらが先に評価される」ことを保証する
+# （順位付けのための番人であって、連続的なトレードオフ項ではない）。
+HM_STAIR_PENALTY = _envf("GH_HM_STAIR_PENALTY", 1.0e6)
+
+# HF-035: 階段制約の対象から「**もう届かない奥のセル**」を外す。既定 -1.0 = 無効。
+# 奥のセルのうち、そのレーンで自分より手前に自分＋持ち上げ量より高い天面があるものは、
+# 公式の水平スイープでは既に到達不能で、二度と埋まらない。そこへ階段を合わせても
+# 得るものが無く、手前側の配置を無意味に禁止するだけになる。
+# 値は持ち上げ量[m]（公式 `start_z`）。0.08 が実機の既定値。
+HM_STAIR_LIVE = _envf("GH_HM_STAIR_LIVE", -1.0)
+
+# HF-035: 階段の許容超過を**荷物の高さに比例**させる版。既定 0.0 = 無効（絶対値 slack のみ）。
+# 実測（n=30×2族の掃引 + 個別課題）で、許容量は 0.10/0.20 では効かず 0.30 で急に効き、
+# 0.60 でまた失われるという鋭い山を示した。7SKU の厚みが 0.24〜0.27m に集中しているため、
+# これは「**奥の層より1荷物ぶんだけ先行してよい**」＝層を奥から手前へ完成させてから
+# 次の層に上がる、という層規律に対応する。SKU 構成が違う本番課題へ持っていくときに
+# 絶対値 0.30 が同じ意味を持つ保証はないので、荷物高さの倍率で表せるようにする。
+# 実効 slack = max(GH_HM_STAIR_SLACK, GH_HM_STAIR_K * 回転後の荷物高さ)。
+HM_STAIR_K = _envf("GH_HM_STAIR_K", 0.0)
 
 # HF-022 Phase 7: **体積×高さの交差項**。既定 0.0 = 無効（v25 恒等）。
 # cog_score は「相対中心高の**単純平均**」（fit_cog_predictor.py で本番の偏微分と 8/9 一致）。
@@ -417,7 +495,17 @@ HM_SOFT_RESERVE = _envf("GH_HM_SOFT_RESERVE", 0.0)
 # **下敷き 13.4%**。前倒し（GH_SOFT_SHIFT<0）で未積載は 3.8% まで消せるが、下敷きが 23.8% に
 # 増える（早く置く＝低い＝後続のハード品が上に載る）。減点 `HM_W_SOFT_VIOL=40` では足りない。
 # 1 にすると候補段階で無効化する（順序は不変なので fill/np への影響は位置選択経由のみ）。
-HM_SOFT_VETO = _envi("GH_HM_SOFT_VETO", 0)
+HM_SOFT_VETO = _envi("GH_HM_SOFT_VETO", 1)  # v50でベイク（2026-08-09）。旧既定0=v43恒等
+
+# HF-044: `HM_SOFT_VETO`と同型の優先品保護（既定 0=無効）。非優先品を優先品の真上に
+# 置く候補を、0=許容（HM_W_PRIO_VIOLの減点のみ）/1=常に排除/2=段階的（stair_bad型、
+# desperate段のみ解禁）で制御する。real_000実測（v52既定）で優先品4個中3個が違反
+# （未積載2件+下敷き1件）と判明——`GH_PRIO_LATE=1`（優先品を末尾へ回す既存レバー、
+# v43由来）が原因で、末尾到着時には良い場所が埋まっている。placement_scoreの
+# 実効重みはPublicで0.000（findings §2.2.1）と推定されているため改善の直接効果は
+# 不明だが、下敷き（他属性からの被覆）はplacement_scoreの定義上の違反であり、
+# 保護自体に副作用の少ない安全弁として実装する。
+HM_PRIO_VETO = _envi("GH_HM_PRIO_VETO", 0)
 
 # HF-025: **重い荷物の高所着地を硬く禁止する**（既定 -1 = 無効、v35 恒等）。
 # 公式 cog は `100(1 − (z_com−z_floor)/(z_top−z_floor))`、`z_com = Σm_i z_i / Σm_i` で
@@ -437,7 +525,7 @@ HM_SOFT_VETO = _envi("GH_HM_SOFT_VETO", 0)
 # 局所公式cog は +0.42 と上がったのに **本番cog は −0.83 で符号が反転**した。
 # 「cog が Public の支配変数」という観察（cog上位4件=Public上位4件）は**相関であって
 # 因果ではない**と判定される。公式定義どおりに質量重心を下げても本番 cog は動かない。
-HM_HEAVY_CEIL = _envf("GH_HM_HEAVY_CEIL", -1.0)
+HM_HEAVY_CEIL = _envf("GH_HM_HEAVY_CEIL", 0.75)  # v52でベイク（2026-08-09）。旧既定-1.0=v50恒等
 # 拒否の対象とする質量の下限（全荷物の質量分位。0.5 なら重い方の半分）。
 HM_HEAVY_CEIL_Q = _envf("GH_HM_HEAVY_CEIL_Q", 0.5)
 
@@ -509,7 +597,17 @@ HM_W_FLOOR_VOL = _envf("GH_HM_W_FLOOR_VOL", 0.0)
 # 崩れは `is_placed_safe` 単独失敗＝エピソード即終了（−32pt np）なので、支持率を緩める前に
 # こちらで裾を押さえる。`land - raw_min` は候補生成で既に計算済みなので追加コストはほぼゼロ。
 # 既定は無効（大きな値）＝v14 恒等。
+#
+# HF-037追補（findings §25）: 当初 `valid` への硬いANDで実装し n=30×3しきい値で screen した
+# ところ、np が −2.3〜−6.1pt（threshold 0.60〜0.25）比例して削れる大退行だった——bridging を
+# 完全に禁止すると、平らな着地が無い局面（§19の階段制約下で頻発）でも荷物を諦めてしまう
+# （逃げ道が無い）。`HM_STAIR_SLACK`/`stair_bad` と同じ「候補は消さず大減点＋desperate段
+# でのみ解禁」の型へ変更（`HM_ROUGH_PENALTY` 参照）。bridging は最終手段として残るハイブリッド
+# 版。しきい値の意味（0.25でroughness>0.25mを禁止）は不変。
 HM_MAX_ROUGH = _envf("GH_HM_MAX_ROUGH", 1.0e9)
+# HF-037: `rough_bad` フラグ付き候補への減点。`HM_STAIR_PENALTY` と同じ「他の全項の合計より
+# 十分大きい」番人定数（連続的なトレードオフ項ではなく順位付け専用）。
+HM_ROUGH_PENALTY = _envf("GH_HM_ROUGH_PENALTY", 1.0e6)
 
 # 空間層化 top-K 保持（偏り防止：Y×X ビンごと上位＋全体上位）。GH_HM_* で breadth を上書き可
 # （EMS-skip 高速化で pmax<1s の余裕ができたため、候補を広げて placement 品質＝fill を狙う）。

@@ -34,6 +34,7 @@ from .constants import (
     HM_PRIO_RESERVE,
     HM_SOFT_RESERVE,
     HM_SOFT_VETO,
+    HM_PRIO_VETO,
     HM_HEAVY_CEIL,
     HM_HEAVY_CEIL_Q,
     HM_PRIO_RESERVE_GLOBAL,
@@ -41,13 +42,19 @@ from .constants import (
     HM_WIDE_BREADTH,
     HM_FLOOR_VOL_SKIP_PRIO,
     HM_MAX_ROUGH,
+    HM_ROUGH_PENALTY,
     HM_SUPPORT_TOL,
     HM_WALL_CLEARANCE,
     HM_W_BIG,
     HM_W_BLOCK,
     HM_LOOKAHEAD_K,
+    HM_COLUMN_K,
     HM_SLAB_H,
     HM_SLAB_REF_Q,
+    HM_STAIR_K,
+    HM_STAIR_LIVE,
+    HM_STAIR_PENALTY,
+    HM_STAIR_SLACK,
     HM_LOOKAHEAD_PROBE,
     HM_W_ZBLOCK,
     HM_W_COG,
@@ -65,8 +72,10 @@ from .constants import (
     HM_W_SLAB,
     HM_W_TIPRISK,
     HM_W_SOFT_CAP,
+    HM_W_SOFT_ON_SOFT,
     HM_W_SOFT_VIOL,
     HM_W_TALL,
+    HM_W_TILT_SOFT,
     PlacementParams,
 )
 from .container_space import (
@@ -75,7 +84,7 @@ from .container_space import (
     cells_of_aabb,
     contains_oriented_box,
 )
-from .geometry import oriented_size
+from .geometry import leaning_deg_from_quat, oriented_size
 from .masks import check_l_path
 from .types import Candidate
 
@@ -91,7 +100,7 @@ _H2_ENABLED = os.environ.get("GH_HM_H2", "1") != "0"
 #     （ローカル COG は改善したが本番では逆）→ 既定 OFF。num_placed を下げる変更は不可。
 #   prio(優先容器 bonus/penalty): ローカルは inert（優先容器なし）、本番 placement_score 用 → 既定 ON。
 # いずれも GH_HM_COG/SOFT/PRIO=1/0 で明示切替でき、A/B・回帰計測に使う。
-_H2_COG = _H2_ENABLED and os.environ.get("GH_HM_COG", "0") != "0"
+_H2_COG = _H2_ENABLED and os.environ.get("GH_HM_COG", "1") != "0"  # v50でベイク（2026-08-09）。旧既定"0"=v43恒等
 _H2_SOFT = _H2_ENABLED and os.environ.get("GH_HM_SOFT", "0") != "0"
 _H2_PRIO = _H2_ENABLED and os.environ.get("GH_HM_PRIO", "1") != "0"
 # soft を flat 制限（塔化防止, fill を強く食う）と soft-cap（低頭上ポケット誘導, 安価）に分離。
@@ -194,6 +203,11 @@ class ContainerHeightModel:
         prio_low = np.zeros((nx, ny), dtype=bool)
         soft_up = np.zeros((nx, ny), dtype=bool)
         prio_up = np.zeros((nx, ny), dtype=bool)
+        # HF-037: soft の最上面を成す荷物の「軸整列姿勢からの傾き角」[deg]（0=傾きなし）。
+        # `HM_W_TILT_SOFT` が既定0（無効）の間は計算しない（他グリッドと同様、無効時ゼロコスト）。
+        soft_lean_low = np.zeros((nx, ny), dtype=np.float64)
+        soft_lean_up = np.zeros((nx, ny), dtype=np.float64)
+        _track_lean = HM_W_TILT_SOFT != 0.0
 
         for item in placed:
             amin = np.asarray(item.aabb_min_rel, dtype=np.float64)
@@ -207,12 +221,15 @@ class ContainerHeightModel:
             on_shelf = np.any(shelf_cover[ix, iy]) and bottom >= (
                 float(np.min(shelf_top_for_route[ix, iy])) - 0.02
             )
+            lean = float(leaning_deg_from_quat(item.orn_quat)) if (_track_lean and item.is_soft) else 0.0
             if on_shelf:
                 cur = upper[ix, iy]
                 win = top > cur
                 upper[ix, iy] = np.where(win, top, cur)
                 if item.is_soft:
                     soft_up[ix, iy] = np.where(win, True, soft_up[ix, iy])
+                    if _track_lean:
+                        soft_lean_up[ix, iy] = np.where(win, lean, soft_lean_up[ix, iy])
                 if item.is_priority:
                     prio_up[ix, iy] = np.where(win, True, prio_up[ix, iy])
             else:
@@ -221,6 +238,8 @@ class ContainerHeightModel:
                 lower[ix, iy] = np.where(win, top, cur)
                 if item.is_soft:
                     soft_low[ix, iy] = np.where(win, True, soft_low[ix, iy])
+                    if _track_lean:
+                        soft_lean_low[ix, iy] = np.where(win, lean, soft_lean_low[ix, iy])
                 if item.is_priority:
                     prio_low[ix, iy] = np.where(win, True, prio_low[ix, iy])
 
@@ -229,6 +248,8 @@ class ContainerHeightModel:
         self.soft_low = soft_low
         self.prio_low = prio_low
         self.soft_up = soft_up
+        self.soft_lean_low = soft_lean_low
+        self.soft_lean_up = soft_lean_up
         self.prio_up = prio_up
         # 頭上上限（候補生成用、構造物より CEIL_CLEARANCE 内側）。
         self.lower_ceiling = np.asarray(space.ceil_z, dtype=np.float64) - HM_CEIL_CLEARANCE
@@ -365,6 +386,48 @@ MASS_THRESHOLD: dict[str, float] = {"v": 0.0}
 SOFT_TOTAL: dict[str, float] = {"n": 0.0, "vol": 0.0, "hmax": 0.0}
 
 
+def _stair_deep_min(layer: np.ndarray, ceiling: np.ndarray, item_h: float,
+                    wx: int, wy: int) -> np.ndarray:
+    """各窓アンカー (i,j) について「奥に残っているセルの最小天面高」を返す（HF-035）。
+
+    窓 `[i, i+wx) × [j, j+wy)` より**奥**（y インデックスが `j+wy` 以上）のセルのうち、
+    まだこの荷物が入る余地のあるものだけを対象に、その天面高の最小値を返す。
+    余地の無いセル（頭上が `item_h` 未満）と無効セル（-inf）は `+inf` として除外する
+    ―― もう埋められないセルに階段を合わせる必要はないため。
+
+    戻り値の形は `_sliding_max2d(layer, wx, wy)` と同じ `(nx-wx+1, ny-wy+1)`。
+    窓が最奥に接していて「奥のセル」が存在しない場合は `+inf`（制約なし）になる。
+
+    Args:
+        layer: 天面高グリッド `(nx, ny)`（`model.lower` / `model.upper`）。
+        ceiling: 頭上上限グリッド `(nx, ny)`（`model.lower_ceiling` 等）。
+        item_h: 荷物の回転後高さ [m]。
+        wx: x 方向の窓セル数。
+        wy: y 方向の窓セル数。
+
+    Returns:
+        `(nx-wx+1, ny-wy+1)` の float 配列。
+    """
+    nx, ny = layer.shape
+    finite = layer > (_NEG_INF / 2.0)
+    usable = finite & ((ceiling - layer) >= (item_h - 1e-9))
+    if HM_STAIR_LIVE >= 0.0:
+        # そのレーンで自分より手前に「自分の天面＋持ち上げ量」を超える壁があるセルは、
+        # 公式の水平スイープでは既に到達不能＝もう埋まらないので制約から外す。
+        lay_f = np.where(finite, layer, -np.inf)
+        pre = np.full((nx, ny), -np.inf, dtype=np.float64)
+        if ny > 1:
+            pre[:, 1:] = np.maximum.accumulate(lay_f[:, :-1], axis=1)
+        usable = usable & (pre <= (lay_f + HM_STAIR_LIVE))
+    lay = np.where(usable, layer, np.inf)
+    # y 方向の suffix min: suf[a, b] = min(lay[a, b:])、suf[a, ny] = +inf（奥が無い）。
+    suf = np.full((nx, ny + 1), np.inf, dtype=np.float64)
+    suf[:, :ny] = np.minimum.accumulate(lay[:, ::-1], axis=1)[:, ::-1]
+    lane = _sliding_min2d(suf, wx, 1)              # (nx-wx+1, ny+1) 窓が覆うレーンの最小
+    nj = ny - wy + 1
+    return lane[:, wy:wy + nj]
+
+
 def _layer_candidates(
     model: ContainerHeightModel, item, container_idx: int, orn: int, osize: np.ndarray,
     *, upper: bool, per_bin: int, coarse_topk: int,
@@ -412,10 +475,33 @@ def _layer_candidates(
     #   優先品だが soft でない   → soft 帯だけ避ける（優先帯は自分のもの）
     #   soft だが優先品でない    → 優先帯だけ避ける
     #   両方                     → 制約なし
-    if HM_SOFT_VETO and not bool(item.is_soft):
-        # HF-022 Phase 11: soft 上面への非soft 着地を無効化（下敷き違反の根絶）。
-        # soft_hit は「窓内のどこかのセル上面が soft」を意味する（既に計算済み）。
-        valid = valid & ~soft_hit
+    # HF-043: HM_SOFT_VETO=2（既定は1）は「消さず・大減点・desperate段のみ解禁」の
+    # 段階的veto（stair_bad/rough_badと同じ型）。findings §31で判明した問題への対応:
+    # veto=1（常に排除）はsoft保護に安全だがnp/fillを大きく失う（v54実測 Public −1.14、
+    # soft_item_score寄与+0.51に対しsoft悪化寄与−1.25で相殺された）。veto=0（常に許容、
+    # HM_W_SOFT_VIOLの減点のみ）はnp/fillを大きく回復するが、20倍(40→800)や1000万まで
+    # 減点を強めても結果が一切変わらないことを実測で確認——**その候補がその荷物にとって
+    # 唯一の実行可能候補である局面では、減点の大きさは無意味**（スコアで負けても他の選択肢が
+    # 無ければ選ばれる）。段階的vetoはこの「唯一の選択肢」の場合だけ最終段(desperate)で
+    # 解禁し、他に選択肢がある通常段では確実に排除する——veto=1の安全性とveto=0の
+    # 柔軟性の中間を狙う。
+    soft_bad_grid = None
+    if HM_SOFT_VETO != 0 and not bool(item.is_soft):
+        if HM_SOFT_VETO == 2:
+            soft_bad_grid = soft_hit
+        else:
+            # HF-022 Phase 11: soft 上面への非soft 着地を無効化（下敷き違反の根絶）。
+            # soft_hit は「窓内のどこかのセル上面が soft」を意味する（既に計算済み）。
+            valid = valid & ~soft_hit
+
+    # HF-044: HM_SOFT_VETOと同型の優先品保護。非優先品を優先品の真上に置く候補を
+    # 0=許容/1=常に排除/2=段階的（desperate段のみ解禁）で制御する。
+    prio_bad_grid = None
+    if HM_PRIO_VETO != 0 and not bool(item.is_priority):
+        if HM_PRIO_VETO == 2:
+            prio_bad_grid = prio_hit
+        else:
+            valid = valid & ~prio_hit
 
     _band = 0.0
     if reserve_h > 0.0 and cont_prio and not bool(item.is_priority):
@@ -425,11 +511,18 @@ def _layer_candidates(
     if _band > 0.0:
         valid = valid & (top_z <= (ceil_arr - _band + 1e-6))
 
+    # HF-037: 接地面の高低差ゲート（roughness = land - raw_min）。支持率を満たしていても
+    # 深い谷にせり出したカンチレバーは沈降で崩れる（崩れ15件の最小 roughness 0.266m）。
+    # 当初は valid への硬いANDで実装したが、n=30×3しきい値の実測で np が −2.3〜−6.1pt
+    # （threshold 0.60〜0.25）比例して削れる大退行が判明した（findings §25 追補）。
+    # 原因は**逃げ道が無い**こと——`stair_bad`/`soft_nonflat` は候補を消さず大減点＋
+    # desperate段でのみ解禁するが、本項は候補そのものを消していたため、平らな着地が
+    # 一つも無い局面（§19 の階段制約下でよく起きる）でも荷物を諦めてしまっていた。
+    # `stair_bad` と同じ「消さず・大減点・desperate段で解禁」の型へ変更し、bridging を
+    # 完全禁止ではなく最終手段として残す（フォールバックあり版）。
+    rough_bad_grid = None
     if HM_MAX_ROUGH < 1.0e8:
-        # HF-022 安定性ゲート: 接地面の高低差が大きい窓は、支持率を満たしていても
-        # 深い谷にせり出したカンチレバーになり沈降で崩れる（崩れ15件の最小 roughness 0.266m）。
-        # `land - raw_min` は上で計算済みなので実質無コスト。
-        valid = valid & ((land - raw_min) <= HM_MAX_ROUGH)
+        rough_bad_grid = (land - raw_min) > HM_MAX_ROUGH
 
     if not np.any(valid):
         return []
@@ -458,7 +551,8 @@ def _layer_candidates(
 
     # soft の非flat姿勢（最小半寸 + 許容 を超える高さ）は塔化＝不安定。フラグを立て、
     # 呼び出し側の cascade が desperate 段以外で除外する（H2 有効時のみ）。
-    min_half = float(np.min(np.asarray(item.size, dtype=np.float64))) / 2.0
+    min_thick = float(np.min(np.asarray(item.size, dtype=np.float64)))   # 扁平姿勢での厚み
+    min_half = min_thick / 2.0
     soft_nonflat = _H2_SOFT_FLAT and is_soft and (hz > min_half + HM_SOFT_FLAT_TOL)
 
     score = (
@@ -471,6 +565,19 @@ def _layer_candidates(
     )
     if not is_soft:
         score = score - HM_W_SOFT_VIOL * soft_hit.astype(np.float64)
+    if is_soft and HM_W_SOFT_ON_SOFT != 0.0:
+        # 2026-08-11: soft品自身がsoft面へ着地する候補を減点し、floor/hardへの着地を選好
+        # させる（HM_W_SOFT_VIOLの逆方向）。診断（scripts/soft_prio_cluster_diag.py）で
+        # soft-on-softだけ支持多角形proxyのmarginが頻繁に負になる実測に基づく。既定0（無効）。
+        score = score - HM_W_SOFT_ON_SOFT * soft_hit.astype(np.float64)
+    if HM_W_TILT_SOFT != 0.0:
+        # HF-037: 既に傾いている soft 最上面へ荷重を追加で載せる窓を、傾き角に比例して減点する
+        # （findings §25: soft支持の傾きは hard支持の約5〜9倍、soft接触コンプライアンスを
+        # 無効化すると傾きが約半分に減り fill/cog が動くことを n=99×3族で確認済みの機構）。
+        # 傾いていない soft 面（lean=0）は対象外＝HM_W_SOFT_VIOL の役割と競合しない。
+        lean_grid = model.soft_lean_up if upper else model.soft_lean_low
+        lean_win = _sliding_max2d(lean_grid, wx, wy)
+        score = score - HM_W_TILT_SOFT * lean_win
     if not is_prio:
         score = score - HM_W_PRIO_VIOL * prio_hit.astype(np.float64)
     if HM_W_HARDHARD != 0.0 and not upper and not is_soft:
@@ -541,6 +648,25 @@ def _layer_candidates(
             score = score - HM_W_PRIO_CONTAINER_PENALTY
         elif (not is_prio) and cont_prio:
             score = score - HM_W_NONPRIO_IN_PRIO_CONTAINER_PENALTY
+    # HF-035: z を見る階段制約。奥に「まだこの荷物が入る余地があり、かつ今の着地より低い」
+    # セルが残っている窓を `stair_bad` として印す。制約違反は候補から**消さず**、
+    # 大きな減点で順位を最後尾へ落としたうえでフラグを立てる（desperate 段で解禁される）。
+    # 消さないのは、階段を守れる候補が1つも無い局面で投了させないため。
+    stair_bad_grid = None
+    if (HM_STAIR_SLACK > 0.0 or HM_STAIR_K > 0.0) and not upper:
+        deep_min = _stair_deep_min(layer, model.lower_ceiling, float(osize[2]), wx, wy)
+        # 倍率は **回転後の高さ `osize[2]` ではなく扁平時の厚み `min(size)`** に掛ける。
+        # osize[2] を使うと縦置き候補（0.65m など）だけ slack が 0.75m まで開き、
+        # 「2層ぶん先行してよい」領域（§19.7 で f1 fill −2.47 / f2 fill −6.25 と実証済み）に
+        # 入って壁を作る候補が優遇されてしまう（K=1.15 が絶対値 0.30 に負けた原因）。
+        # 層の厚みを決めるのは扁平姿勢の厚みなので、そちらを基準にする。
+        slack = max(HM_STAIR_SLACK, HM_STAIR_K * min_thick)
+        stair_bad_grid = top_z > (deep_min + slack)
+        score = score - HM_STAIR_PENALTY * stair_bad_grid.astype(np.float64)
+
+    if rough_bad_grid is not None:
+        score = score - HM_ROUGH_PENALTY * rough_bad_grid.astype(np.float64)
+
     score = np.where(valid, score, _NEG_INF)
 
     # HF-022 Phase 4: 層規律のため「素の床に直置きか」を候補に印す。
@@ -581,6 +707,14 @@ def _layer_candidates(
         c.features["hm_upper"] = bool(upper)  # 層情報（support 計算・densify で使用）
         c.features["soft_nonflat"] = bool(soft_nonflat)  # desperate 段のみ許容
         c.features["floor"] = bool(is_floor_cell[i, j]) if is_floor_cell is not None else False
+        # HF-035: 階段制約に触れた候補（desperate 段のみ許容）。
+        c.features["stair_bad"] = bool(stair_bad_grid[i, j]) if stair_bad_grid is not None else False
+        # HF-037: 高低差ゲート（bridging）に触れた候補（desperate 段のみ許容）。
+        c.features["rough_bad"] = bool(rough_bad_grid[i, j]) if rough_bad_grid is not None else False
+        # HF-043: 段階的soft veto（HM_SOFT_VETO=2）に触れた候補（desperate 段のみ許容）。
+        c.features["soft_bad"] = bool(soft_bad_grid[i, j]) if soft_bad_grid is not None else False
+        # HF-044: 段階的prio veto（HM_PRIO_VETO=2）に触れた候補（desperate 段のみ許容）。
+        c.features["prio_bad"] = bool(prio_bad_grid[i, j]) if prio_bad_grid is not None else False
         cands.append(c)
     return cands
 
@@ -611,6 +745,9 @@ LAST_ACCEPTED: dict = {}
 
 # HF-022 Phase 4: 先読みが実際に選択を変えた回数（診断。無言の no-op を検出するため）。
 LOOKAHEAD_STATS: dict = {}
+
+# HF-037: 柱一致度による再選択が実際に選択を変えた回数（診断、LOOKAHEAD_STATS と同型）。
+COLUMN_STATS: dict = {}
 
 
 def support_features(model: ContainerHeightModel, cand: Candidate, item_meta: dict) -> dict:
@@ -822,6 +959,67 @@ def decide_topk(state, budget, k):
     return out
 
 
+def decide_candidates(state, budget, k):
+    """スコア上位から feasible な候補を最大 k 件、item重複を許して返す（RL方策・DRL計画Phase 1用）。
+
+    `decide_topk` は beam 探索用に「item ごとに1つ」へ重複排除するが、本関数は
+    policy() の1手を「安全性フィルタ済みの候補群からニューラルネットが選ぶ」再ランキング
+    方式（`docs/HANDOFF.md` DRL方策計画）向けに、同一itemの複数候補も含めて返す。
+    候補生成・カスケード・feasibility判定・desperate段限定の各種veto（stair_bad/rough_bad/
+    soft_bad/prio_bad/soft_nonflat）・床限定パス（HM_FLOOR_FIRST）は `decide_placement` と
+    完全に同じ条件を適用する（安全性クリティアルなロジックは一切変更しない）。
+    `HM_LOOKAHEAD_K`/`HM_COLUMN_K`による再選択と densify は意図的に適用しない
+    （前者は「代替シグナルで1候補を選び直す」既存の探索的レバーで、本関数はその代わりに
+    ニューラルネットが候補群から選ぶことを意図しているため。densifyは「採用が決まった1手」を
+    壁際へ寄せる後処理のため、複数候補を並べて比較する本関数の用途には不要）。
+
+    Returns:
+        (candidates, models) のタプル。`candidates` は `Candidate` オブジェクトのリスト
+        （スコア降順、feasibleのみ、最大 k 件）。`models` は `container_idx` →
+        `ContainerHeightModel` のリストで、`support_features(models[c.container_idx], c, item_meta)`
+        により各候補の安定性特徴量を取り出せる。
+    """
+    models, ranked = _build_models_ranked(state, budget)
+    if not ranked:
+        return [], models
+    out: list[Candidate] = []
+    seen_ids: set[int] = set()   # 段をまたいだ同一候補の重複追加を防ぐ（decide_topkのseen_itemsと同趣旨）
+    n_stages = len(HM_CASCADE)
+    for s_idx, (incl_m, safety_m, sr_min, sc_min, _pb, _ck) in enumerate(HM_CASCADE):
+        is_desperate = s_idx == n_stages - 1
+        pp_stage = PlacementParams(safety_margin=float(safety_m))
+        passes = (True, False) if HM_FLOOR_FIRST > 0.0 else (False,)
+        for floor_only in passes:
+            for cand in ranked:
+                if len(out) >= k or budget.over_soft():
+                    return out, models
+                if id(cand) in seen_ids:
+                    continue
+                if (not is_desperate) and cand.features.get("soft_nonflat"):
+                    continue
+                if (not is_desperate) and cand.features.get("stair_bad"):
+                    continue
+                if (not is_desperate) and cand.features.get("rough_bad"):
+                    continue
+                if (not is_desperate) and cand.features.get("soft_bad"):
+                    continue
+                if (not is_desperate) and cand.features.get("prio_bad"):
+                    continue
+                model = models[cand.container_idx]
+                if floor_only and not cand.features.get("floor"):
+                    continue
+                if floor_only and model.floor_covered >= HM_FLOOR_FIRST:
+                    continue
+                if _feasible(state, model, cand, incl_m, pp_stage, sr_min, sc_min):
+                    out.append(cand)
+                    seen_ids.add(id(cand))
+            if len(out) >= k:
+                break
+        if len(out) >= k:
+            break
+    return out, models
+
+
 def _explain_none(state, models, ranked, reason: str) -> dict:
     """投了時の内訳を作る（診断専用・`_DIAG` のときだけ呼ばれる）。
 
@@ -875,6 +1073,42 @@ def _survivors(state, cand, probe, pp_stage) -> int:
         plist.pop()
 
 
+def _column_match_ratio(state, cand) -> float:
+    """HF-037: `cand` の底面が既配置の**単一の荷物**の上面とどれだけ一致するかを返す（0〜1）。
+
+    トーテムポール構成法（`docs/idea_totem_stacking_2026-08-05.txt`）の「柱」を、既存の
+    heightmap スコアに無い情報として近似する: 床置き・複数荷物にまたがる着地・宙に浮いた
+    候補（数値誤差）は 0 に近く、既配置荷物1個の上面にほぼぴったり乗る候補ほど 1 に近い。
+    `state.placed` の AABB を線形走査するだけで、新しい共有状態は持たない。
+    """
+    placed = state.placed.get(int(cand.container_idx), [])
+    if not placed:
+        return 0.0
+    osize = np.asarray(cand.osize, dtype=np.float64)
+    pos = np.asarray(cand.pos_rel, dtype=np.float64)
+    cand_min = pos - osize / 2.0
+    cand_max = pos + osize / 2.0
+    cand_area = float(osize[0] * osize[1])
+    if cand_area <= 0.0:
+        return 0.0
+    best = 0.0
+    for item in placed:
+        amin = np.asarray(item.aabb_min_rel, dtype=np.float64)
+        amax = np.asarray(item.aabb_max_rel, dtype=np.float64)
+        if abs(float(amax[2]) - float(cand_min[2])) > HM_WALL_CLEARANCE:
+            continue  # この荷物の上面に着地していない
+        ox = max(0.0, min(cand_max[0], amax[0]) - max(cand_min[0], amin[0]))
+        oy = max(0.0, min(cand_max[1], amax[1]) - max(cand_min[1], amin[1]))
+        overlap = ox * oy
+        if overlap <= 0.0:
+            continue
+        item_area = float((amax[0] - amin[0]) * (amax[1] - amin[1]))
+        cover_cand = overlap / cand_area
+        cover_item = overlap / item_area if item_area > 0.0 else 0.0
+        best = max(best, min(cover_cand, 1.0) * min(cover_item, 1.0))
+    return best
+
+
 def decide_placement(state, budget):
     """heightmap エンジンで1手を選び (item_idx, container_idx, pos_rel, orientation) を返す。
 
@@ -909,6 +1143,19 @@ def decide_placement(state, budget):
                     _DIAG_LOG.append(_explain_none(state, models, ranked, "over_soft"))
                 return None  # soft 予算で全体を打ち切り（policy 時間ガード。max policy ≲5s に収める）
             if (not is_desperate) and cand.features.get("soft_nonflat"):
+                continue
+            # HF-035: 階段制約（扉へ向かって天面が単調非増加）に触れる候補は、
+            # 守れる候補が全滅した最終段でだけ許可する。
+            if (not is_desperate) and cand.features.get("stair_bad"):
+                continue
+            # HF-037: 高低差ゲート（bridging）に触れる候補も同様に最終段でだけ許可する。
+            if (not is_desperate) and cand.features.get("rough_bad"):
+                continue
+            # HF-043: 段階的soft veto（HM_SOFT_VETO=2）に触れる候補も最終段でだけ許可する。
+            if (not is_desperate) and cand.features.get("soft_bad"):
+                continue
+            # HF-044: 段階的prio veto（HM_PRIO_VETO=2）に触れる候補も最終段でだけ許可する。
+            if (not is_desperate) and cand.features.get("prio_bad"):
                 continue
             model = models[cand.container_idx]
             if floor_only and not cand.features.get("floor"):
@@ -946,6 +1193,31 @@ def decide_placement(state, budget):
                             cand = best
                             model = models[cand.container_idx]
                         LOOKAHEAD_STATS["calls"] = LOOKAHEAD_STATS.get("calls", 0) + 1
+                # HF-037: 柱一致度による再選択。`lookahead_k>1`（課題B）でのみ意味を持つ設計で、
+                # コード自身がそれをガードする——課題Aは pool が常に1個なので
+                # `state.meta["lookahead_k"]` は必ず 1 以下になり、このブロックは絶対に発火しない
+                # （findings §23.2/§24 で確認済み。v43 の実績には理論上一切触れない）。
+                if HM_COLUMN_K > 1 and int(state.meta.get("lookahead_k", 1)) > 1:
+                    feas2 = [cand]
+                    for c2 in ranked:
+                        if len(feas2) >= HM_COLUMN_K or budget.over_soft():
+                            break
+                        if c2 is cand or ((not is_desperate) and c2.features.get("soft_nonflat")):
+                            continue
+                        if _feasible(state, models[c2.container_idx], c2, incl_m, pp_stage,
+                                     sr_min, sc_min):
+                            feas2.append(c2)
+                    if len(feas2) > 1:
+                        best2, best2_m = cand, _column_match_ratio(state, cand)
+                        for c2 in feas2:
+                            m = _column_match_ratio(state, c2)
+                            if m > best2_m:          # 同率なら先（=高スコア）を保つ
+                                best2, best2_m = c2, m
+                        if best2 is not cand:
+                            COLUMN_STATS["changed"] = COLUMN_STATS.get("changed", 0) + 1
+                            cand = best2
+                            model = models[cand.container_idx]
+                        COLUMN_STATS["calls"] = COLUMN_STATS.get("calls", 0) + 1
                 cand = _densify(state, model, cand, incl_m, pp_stage, sr_min, sc_min, budget)
                 if _DIAG:
                     # 採用手だけ特徴量を記録（安定性モデルの教師データ）。ホットパス外。

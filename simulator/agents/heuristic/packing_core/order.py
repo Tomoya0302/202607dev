@@ -104,6 +104,8 @@ def _item_metrics(items: list[dict]) -> list[dict]:
         volume = length * width * height
         if not math.isfinite(volume):
             raise ValueError("volume must be finite")
+        # 回転不変の底面フットプリント署名（2cm刻みで丸め、実測ノイズ差を同一グループへ吸収）。
+        fp = (round(min(length, width) / 0.02), round(max(length, width) / 0.02))
         out.append({
             "index": _item_index(item, position),
             "pos": position,
@@ -114,6 +116,7 @@ def _item_metrics(items: list[dict]) -> list[dict]:
             "mass": mass,
             "soft": bool(item.get("is_soft", False)),
             "prio": bool(item.get("is_prioritized", False)),
+            "fp": fp,
         })
     return out
 
@@ -554,6 +557,17 @@ def search_order_composite(
         best_order, best_j = evaluated[0]
         anchors = evaluated[: max(1, BEAM_W)]
 
+        # HF-039 試作（不採用、記録として残す）: 予算が乏しいタスク（2容器・80品目、実測
+        # 36回/140s）で `ORDER_STAGNANT_RESTART=32` が高すぎて1つ目のアンカーから一度も
+        # 抜けられない点を問題視し、実測リプレイ単価から停滞閾値を動的に下げてアンカーを
+        # 複数周ローテーションさせる案を試した。f2_99 の3タスクで固定32とペア比較（同一
+        # rng seed・同一シード集合）した結果、**3/3で固定32の方が composite J が高かった**
+        # （f2_0000: 27.52 対 27.36 / f2_0001: 27.35 対 27.31 / f2_0002: 27.62 対 27.57）。
+        # 限られた山登り予算は複数アンカーに分散するより、最良シード1本に集中投下する方が
+        # 有効という逆の結果。1タスクあたりの比較なので統計的に確定ではないが、3/3で
+        # 同方向のため不採用とし、既定の固定閾値へ戻す。
+        restart_after = ORDER_STAGNANT_RESTART
+
         # 2) 決定論的マルチスタート best-improvement 山登り（固定シード rng）。
         rng = np.random.default_rng(20260801)
         active = 0
@@ -571,7 +585,7 @@ def search_order_composite(
                     best_order, best_j = neighbor, j
             else:
                 stagnant += 1
-                if stagnant >= ORDER_STAGNANT_RESTART and len(anchors) > 1:
+                if stagnant >= restart_after and len(anchors) > 1:
                     active = (active + 1) % len(anchors)
                     current_order, current_j = anchors[active]
                     stagnant = 0
@@ -616,6 +630,23 @@ def _build_seed_orders(metrics: list[dict]) -> list[list[int]]:
     seeds.append(_sorted_indices(metrics, lambda m: (m["soft"], m["height"], -m["base"], m["pos"])))
     # 8: priority先行（優先貨物を前へ）・soft後置・体積降順
     seeds.append(_sorted_indices(metrics, lambda m: (not m["prio"], m["soft"], -m["vol"], m["pos"])))
+    # 9: HF-038 トーテムポール試作: 同一フットプリント（回転不変・2cm丸め）を隣接させ、
+    #    柱ごとに重量降順（重い土台を先に）で積む。列（フットプリント種）自体は底面積降順
+    #    →列内総体積降順（大きい柱を先に完成させる＝§19の到達可能性に有利な向きと一致）。
+    #    忠実リプレイの composite 目的でしか採否が決まらないため、これ単体が悪くても
+    #    非退行フロア（greedy_base）を下回ることはない。
+    if os.environ.get("GH_ORDER_TOTEM_SEED", "1") != "0":
+        fp_rank: dict[tuple, tuple] = {}
+        for m in metrics:
+            fp = m["fp"]
+            base_area = fp[0] * 0.02 * fp[1] * 0.02
+            prev = fp_rank.get(fp)
+            fp_rank[fp] = (base_area, prev[1] + m["vol"]) if prev else (base_area, m["vol"])
+        seeds.append(_sorted_indices(
+            metrics,
+            lambda m: (m["soft"] or m["prio"], -fp_rank[m["fp"]][0], -fp_rank[m["fp"]][1],
+                       m["fp"], -m["mass"], m["pos"]),
+        ))
 
     # index tuple で重複除去（順序維持）
     seen: set[tuple] = set()

@@ -23,12 +23,56 @@ from .packing_core.constants import (
     TimeParams,
 )
 from .packing_core import heightmap as _heightmap
-from .packing_core.heightmap import decide_placement
+from .packing_core.heightmap import decide_candidates, decide_placement
 from .packing_core.order import composite_key_order, plan_order_forward_sim
 from .packing_core.state import build_state, make_action
 from .packing_core.watchdog import StepBudget
 
 logger = logging.getLogger("packing")
+
+# DRL方策計画Phase 4（`docs/HANDOFF.md`）: 既定OFFの候補再ランキング型RL方策。
+# `GH_RL_POLICY=1` のときのみ有効化し、モデル読み込み・推論いずれかで例外が起きても
+# 既存の `decide_placement`（v52既定挙動）へ安全にフォールバックする
+# （`GH_ROLLOUT`/`GH_SEQ_TRIPLE`等、既存の全 `GH_*` レバーと同じ防御パターン）。
+GH_RL_POLICY = os.environ.get("GH_RL_POLICY", "0") != "0"
+# 現状は評価目的の暫定パスで、提出zipへのモデル同梱はまだ未対応（計画Phase 4注記）。
+GH_RL_POLICY_CKPT = os.environ.get("GH_RL_POLICY_CKPT", "")
+GH_RL_POLICY_K = int(os.environ.get("GH_RL_POLICY_K", "64") or "64")
+
+
+def _rl_policy_decide(agent, state, budget):
+    """候補再ランキング型RL方策で1手を選ぶ。失敗時は None を返す（呼び出し側が
+    `decide_placement` へフォールバックする）。ホットパス外の例外はすべてここで握り潰す。
+    """
+    try:
+        model = getattr(agent, "_rl_policy_model", None)
+        if model is None:
+            if not GH_RL_POLICY_CKPT:
+                return None
+            from .packing_core.rl_model import load_policy
+            model = load_policy(GH_RL_POLICY_CKPT, device="cpu")
+            agent._rl_policy_model = model
+
+        candidates, models = decide_candidates(state, budget, k=GH_RL_POLICY_K)
+        if not candidates:
+            return None
+
+        import torch
+
+        from .packing_core.rl_features import candidate_batch_features, global_context_vector
+
+        cand_feats = candidate_batch_features(candidates, models, state)
+        ctx_feat = global_context_vector(state)
+        with torch.no_grad():
+            scores = model(torch.from_numpy(cand_feats), torch.from_numpy(ctx_feat))
+        best_idx = int(torch.argmax(scores).item())
+        best = candidates[best_idx]
+        return (int(best.item_idx), int(best.container_idx),
+                np.asarray(best.pos_rel, dtype=np.float64), int(best.orientation))
+    except Exception:
+        logger.warning("GH_RL_POLICY decide failed; falling back to decide_placement",
+                        exc_info=True)
+        return None
 
 # HF-012 Phase H1: policy の配置決定は src/packing_core/heightmap.py::decide_placement へ委譲
 # （EMS 列挙〜safe_decide を置換）。旧 EMS パイプライン用の定数・import（FEATURE_BUDGET_FRACTION,
@@ -207,6 +251,7 @@ class Agent:
         # _policy_impl は毎ステップ observation から init を再構築する（下記）。
         self.optimize_enabled = False
         self.lookahead_k = 1
+        self._rl_policy_model = None  # GH_RL_POLICY 用、初回使用時に遅延読み込み
         self.container_list = []
         # T-028: telemetry writer は起動時の環境変数（TELEMETRY_DIR/TELEMETRY_RUN_ID）から
         # 一度だけ生成する（§4.13）。policy呼出し通番はAgentインスタンスごとに0始まり。
@@ -452,7 +497,7 @@ class Agent:
             # 対立する。np モデルを採ったのは (1) Public 67 の実在が重み付きモデルの上限 60 を
             # 反証する (2) np は同一コード計算で連鎖が機構的に堅い一方 ctr_mean は v34 で破れた
             # (3) 上振れ +4.5 対 下振れ −1.0 の非対称、の3点による。
-            shift = _envf_local("GH_SOFT_SHIFT", -1.3)
+            shift = _envf_local("GH_SOFT_SHIFT", 0.0)  # v50でベイク（2026-08-09）。旧既定-1.3=v43恒等
             # HF-022 v31: **負値＝優先品の前倒し**を −1.6 でベイク。placement は「正しく置けた
             # 優先品の割合」で**未積載も違反**に数えるので、前倒しで積み残しが減ると直接上がる。
             # dr10 でローカル placement 29.68 → 76.00。−0.8 と −1.6 を比較して 3ベンチすべてで
@@ -564,7 +609,7 @@ class Agent:
             # 1個前へ引き出す」構造的に異なる操作。全index を過不足なく1回ずつ保つ
             # （pending から pop して result へ append するだけなので契約は自動的に保たれる）。
             # 既定 0（無効、v38恒等）。
-            max_run = int(os.environ.get("GH_HARD_MAX_RUN", "2") or "2")
+            max_run = int(os.environ.get("GH_HARD_MAX_RUN", "1") or "1")  # v50でベイク（2026-08-09）。旧既定2=v43恒等
             if max_run <= 0:
                 return order
             soft = {int(it["index"]) for it in item_list if it.get("is_soft")}
@@ -587,8 +632,71 @@ class Agent:
                 run = 0 if idx in soft else run + 1
             return result
 
+        def _footprint_group_order(order):
+            # HF-036: **トーテムポール構成法の順序レベル試作**（docs/idea_totem_stacking_2026-08-05.txt）。
+            # §19/§21 の階段制約（heightmap.py の候補スコアへの後付け減点）は本番で2連敗した
+            # （v46 Δcog −6.66、v47 Δcog −15.39）。v47 は「形状が立方体に近い荷物ほど
+            # GH_HM_STAIR_K の slack を過大に得る」という位置レベル特有の副作用で失敗しており、
+            # §16.4「位置レベルの変更はcog/stabilityを予測不能に動かす」を追認する結果になった。
+            # 本レバーは同じ「奥から一柱ずつ積む」という発想を、heightmap.py に一切触れず
+            # 純粋な順序後処理として実装する——設置面積（＝荷物は100%扁平姿勢で着地するので
+            # 最小辺が高さ、残り2辺の積が設置面積）が近い荷物を到着順で連続させることで、
+            # `policy()` の既存の貪欲着地面選択（無変更）が結果的に同じ足跡へ積み増しやすくなる
+            # ことを狙う。`_heavy_low_order`（質量バケツ）と同型のバケツ安定ソートで実装し、
+            # 優先品は前方バケツに固定（placement 保護）、バケツ内は直前段の順序を保持
+            # （fill/num_placed 保護）。GH_FOOTPRINT_GROUP=バケツ数（既定 0/1=無効＝v43恒等）。
+            # 未検証。n=30 で方向だけ確認してから n≥99×3族へ進めること（findings §21.4 の教訓）。
+            nb = int(os.environ.get("GH_FOOTPRINT_GROUP", "0") or "0")
+            if nb <= 1:
+                return order
+
+            def _footprint(it) -> float:
+                dims = sorted([float(it["length"]), float(it["width"]), float(it["height"])])
+                return dims[1] * dims[2]
+
+            meta = {int(it["index"]): (_footprint(it), bool(it.get("is_prioritized")))
+                    for it in item_list}
+            by_fp = sorted(order, key=lambda i: -meta.get(int(i), (0.0, False))[0])
+            n = max(len(by_fp), 1)
+            bucket = {int(i): min(nb - 1, rank * nb // n) for rank, i in enumerate(by_fp)}
+
+            def _key(i):
+                _fp, prio = meta.get(int(i), (0.0, False))
+                return 0 if prio else bucket.get(int(i), nb - 1)
+            return sorted(order, key=_key)  # 安定ソート：バケツ内は直前段の順序を保持
+
         def _post(order):
-            return _interleave_hard_order(_heavy_low_order(_soft_shift_order(_reorder_quality(order))))
+            return _footprint_group_order(
+                _interleave_hard_order(_heavy_low_order(_soft_shift_order(_reorder_quality(order)))))
+
+        # HF-045: Sequence Triple（3順列によるcombinatorial同時配置decode、
+        # docs/design_sequence_triple_2026-08-10.md）。既存の逐次貪欲・順序探索・
+        # 物理ロールアウトのいずれとも異なり、全荷物のx/y/z配置をdecodeで同時に決め、
+        # 採用前に既定貪欲floorと実物理（`_RolloutEnv`）で比較する（`plan_optimize`と
+        # 同じ非退行原則）。既定 OFF（GH_SEQ_TRIPLE=1 で有効化）。`_post`定義後に
+        # 配置している理由: floorの構成に`post_fn=_post`が必須（実装時に発見した
+        # バグ、seq_triple.py::seq_triple_optimizeのdocstring参照——`_post`無しの
+        # floorは実際のv52本番挙動より弱く、退行候補を誤って採用しうる）。
+        # 実装時点（2026-08-11）の既知の限界: 初期解（棚パッキングシード）が
+        # v52の成熟したheuristicにまだ及ばず、real_000/f2_0000でfloorを
+        # 上回れていない（decode自体の正しさ＝3D非重なり・非浮遊はproperty testで
+        # 確認済み、seed/SA品質の改善が今後の課題）。
+        if (os.environ.get("GH_SEQ_TRIPLE", "0") != "0" and getattr(self, "optimize_enabled", False)
+                and int(getattr(self, "lookahead_k", 0)) == 1 and getattr(self, "container_list", None)):
+            try:
+                from .packing_core.seq_triple import seq_triple_optimize
+                bud = max(30.0, min(158.0, float(self.time_params.optimize_stop) - 12.0))
+                res = seq_triple_optimize(
+                    self.container_list, item_list, self.lookahead_k, budget_s=bud, post_fn=_post,
+                )
+                if res is not None:
+                    order, plan, rank = res
+                    self._rollout_plan = plan
+                    self._rollout_rank = rank
+                    return order
+            except Exception:
+                self._rollout_plan = None
+                self._rollout_rank = None
 
         if os.environ.get("GH_ORDER_PLAN", "1") == "0" or not getattr(self, "container_list", None):
             # HF-022: 品質目的の並べ替え(_post)は**計画経路にだけ**適用する。この分岐は
@@ -605,8 +713,59 @@ class Agent:
         # 出力（v38 base）を必ず含むため、探索がこれを一度も上回れなくても劣化しない。
         if os.environ.get("GH_ORDER_SEARCH", "0") != "0":
             from .packing_core.order import search_order_composite
-            return _post(search_order_composite(
-                item_list, self.container_list, budget_s, post_fn=_post))
+            if os.environ.get("GH_ORDER_SEARCH_VERIFY", "1") == "0":
+                return _post(search_order_composite(
+                    item_list, self.container_list, budget_s, post_fn=_post))
+            # HF-040: 幾何サロゲート評価器（`_replay_arrival_window`、物理シミュレーションなし）が
+            # v50/v52の階段制約・soft拒否・重量物高所禁止の下では信頼できないことが判明した
+            # （findings §28: real_000でnp−4.88pt退行を再現、f1_99のΔnp分布は std 7.06pt・
+            # 約21%のタスクで悪化・最悪−21.95pt）。既存の物理ロールアウト基盤
+            # （`rollout_plan.py::_RolloutEnv`、HF-014/HF-019）を「与えられた順序を実物理で
+            # 検証する」用途に転用し、探索結果と既定貪欲floorの両方を実際に配置してみて
+            # 実測np（タイブレークは配置体積）が上回った方だけを採用する。非退行フロアを
+            # サロゲートの自己申告ではなく物理で担保する。
+            try:
+                from .packing_core.rollout_plan import _RolloutEnv, _construct, reconstruct_task
+                t_start = time.monotonic()
+                stop_at = t_start + budget_s
+                margin_s = 5.0
+                verify_reserve_s = 25.0
+
+                floor_budget = max(10.0, min(90.0, stop_at - time.monotonic() - margin_s))
+                floor_order = _post(plan_order_forward_sim(
+                    item_list, self.container_list, floor_budget))
+
+                task = reconstruct_task(self.container_list, item_list, self.lookahead_k)
+
+                def _verify(order):
+                    e = _RolloutEnv(task, order=order)
+                    try:
+                        n_placed, _plan = _construct(
+                            e, e.total, budget_s=verify_reserve_s, rule="greedy", record=False)
+                        return int(n_placed), float(e.volume)
+                    finally:
+                        e.close()
+
+                floor_np, floor_vol = _verify(floor_order)
+
+                search_budget = max(
+                    10.0, stop_at - time.monotonic() - verify_reserve_s - margin_s)
+                search_order = _post(search_order_composite(
+                    item_list, self.container_list, search_budget, post_fn=_post))
+                search_np, search_vol = _verify(search_order)
+
+                if os.environ.get("GH_ORDER_SEARCH_DEBUG", "0") != "0":
+                    print(f"HF-040-DEBUG floor=({floor_np},{floor_vol:.4f}) "
+                          f"search=({search_np},{search_vol:.4f}) "
+                          f"chosen={'search' if (search_np, search_vol) > (floor_np, floor_vol) else 'floor'} "
+                          f"elapsed={time.monotonic()-t_start:.1f}s", flush=True)
+                if (search_np, search_vol) > (floor_np, floor_vol):
+                    return search_order
+                return floor_order
+            except Exception:
+                # 検証基盤自体が例外を出した場合は GH_ORDER_SEARCH=0 と同一の安全側へ
+                # フォールバックする（非退行を最優先）。
+                return _post(plan_order_forward_sim(item_list, self.container_list, budget_s))
         if os.environ.get("GH_ORDER_BEAM", "0") != "0":
             from .packing_core.order import plan_order_beam
             return _post(plan_order_beam(item_list, self.container_list, budget_s))
@@ -750,6 +909,10 @@ class Agent:
                     j, fid = min(visible, key=lambda t: rank.get(t[1], 1 << 30))
                     ci, pos, orn = plan[fid]
                     decided_tuple = (int(j), int(ci), np.asarray(pos, dtype=np.float64), int(orn))
+            # DRL方策計画Phase 4: 候補再ランキング型RL方策（既定OFF）。課題A/Bどちらでも
+            # policy() の全ステップで作用する（optimize() 限定の順序レバー群と異なる）。
+            if decided_tuple is None and GH_RL_POLICY:
+                decided_tuple = _rl_policy_decide(self, state, budget)
             if decided_tuple is None:
                 decided_tuple = decide_placement(state, budget)
         finally:
