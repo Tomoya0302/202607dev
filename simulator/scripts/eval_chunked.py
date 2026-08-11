@@ -17,13 +17,15 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 def _run_one(config_path: str, module_path: str, env_overrides: dict, shake_test: bool,
-             kick_speed: float) -> dict:
+             kick_speed: float, equilibrium: bool = False) -> dict:
     env = dict(os.environ)
     env.update(env_overrides)
     cmd = [sys.executable, "-m", "scripts.bench_run",
            "--config-path", config_path, "--module-path", module_path]
     if shake_test:
         cmd.extend(["--shake-test", "--kick-speed", str(kick_speed)])
+    if equilibrium:
+        cmd.append("--equilibrium")
     proc = subprocess.run(
         cmd, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         env=env, capture_output=True, text=True, timeout=300,
@@ -58,6 +60,8 @@ def main() -> None:
                         help="bench_run.py --shake-test を各タスクへ渡す")
     parser.add_argument("--kick-speed", type=float, default=0.4,
                         help="bench_run.py --kick-speed を各タスクへ渡す")
+    parser.add_argument("--equilibrium", action="store_true",
+                        help="bench_run.py --equilibrium を各タスクへ渡す")
     parser.add_argument("--out-path", required=True, help="結果 JSONL 出力先")
     parser.add_argument("--workers", type=int, default=14)
     args = parser.parse_args()
@@ -78,7 +82,7 @@ def main() -> None:
     with open(args.out_path, "w") as out_f, ProcessPoolExecutor(max_workers=args.workers) as pool:
         futures = {
             pool.submit(_run_one, p, args.module_path, env_overrides, args.shake_test,
-                       args.kick_speed): p
+                       args.kick_speed, args.equilibrium): p
             for p in task_paths
         }
         for fut in as_completed(futures):
