@@ -174,18 +174,22 @@ def _sample_tasks(rng: np.random.Generator, n: int, seed_base: int) -> list[tupl
     return out
 
 
-def _policy_gradient_update(model, optimizer, results: list[dict], baseline: float,
+def _policy_gradient_update(model, optimizer, results: list[dict], baselines: list[float],
                              entropy_coef: float) -> dict:
     """収集済み軌跡群から方策勾配を計算し1回optimizer.step()する。REINFORCE、報酬は
     エピソード終端のみ（`compute_reward`）で全ステップに一律ブロードキャストする
     （fill/np/equilibriumはいずれもエピソード完了後にしか確定しないため妥当）。
+
+    `baselines`は`results`と1対1対応（2026-08-12改訂: 家族別の移動平均を使う。
+    family1/family2で到達可能なfill/np水準が体系的に異なるため、共通の1本の
+    baselineだと「家族間の差」がadvantageに漏れ込み勾配のノイズ源になっていた）。
     """
     model.train()
     optimizer.zero_grad(set_to_none=True)
     total_steps = sum(len(r["trajectory"]) for r in results) or 1
     total_pg_loss = 0.0
     total_entropy = 0.0
-    for r in results:
+    for r, baseline in zip(results, baselines):
         advantage = r["reward"] - baseline
         for step in r["trajectory"]:
             cand_feats = torch.from_numpy(step["cand_feats"])
@@ -213,7 +217,11 @@ def main() -> None:
     parser.add_argument("--episodes-per-iter", type=int, default=24)
     parser.add_argument("--workers", type=int, default=12)
     parser.add_argument("--k", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    # 2026-08-12: 初回本番実行（3e-4, entropy_coef=0.01, 単一baseline）はiter 15〜600の
+    # eval reward前半/後半平均が59.84/59.84と完全に横ばいだった（ユーザー指摘で発覚）。
+    # 家族別baseline（本文参照）に加え、学習率を引き上げて動きを出やすくする。まず小規模
+    # diagnostic（--iterations 150程度）でeval reward trendが動くか確認してから本番再開すること。
+    parser.add_argument("--lr", type=float, default=1e-3)
     # fill_score は0-100スケール。num_placed(0-1)は*100で同スケールに揃えた上でnp_weight倍、
     # eq_frac_violation(0-1、通常ほぼ0)も同様。np_weight/eq_weightは「fill_score基準の相対重み」
     # であり、30/50のような大きい値を入れると事実上その項だけの最適化になってしまう
@@ -222,7 +230,7 @@ def main() -> None:
     parser.add_argument("--eq-weight", type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=1.0,
                          help="自己対戦サンプリング時のsoftmax温度。>1で探索を強める。")
-    parser.add_argument("--entropy-coef", type=float, default=0.01)
+    parser.add_argument("--entropy-coef", type=float, default=0.003)
     parser.add_argument("--baseline-momentum", type=float, default=0.9)
     parser.add_argument("--eval-every", type=int, default=20)
     parser.add_argument("--eval-n", type=int, default=6)
@@ -249,7 +257,7 @@ def main() -> None:
     tmp_ckpt = os.path.join(out_dir, "current.pt")
     torch.save(model.state_dict(), tmp_ckpt)
 
-    baseline = None
+    baselines_by_family: dict[int, float] = {}  # 2026-08-12改訂: 家族別移動平均（本文参照）
     best_eval_reward = -1e18
     t_start = time.time()
 
@@ -261,21 +269,30 @@ def main() -> None:
                             args.k, args.np_weight, args.eq_weight, args.temperature)
                 for fam, seed in tasks
             ]
-            results = [f.result() for f in futures]
-            results = [r for r in results if r is not None and r["trajectory"]]
+            raw_results = [f.result() for f in futures]
+            results, families = [], []
+            for (fam, _seed), r in zip(tasks, raw_results):
+                if r is not None and r["trajectory"]:
+                    results.append(r)
+                    families.append(fam)
             if not results:
                 print(f"iter={it:05d} no valid episodes, skipping")
                 continue
 
             rewards = [r["reward"] for r in results]
             mean_reward = float(np.mean(rewards))
-            if baseline is None:
-                baseline = mean_reward
-            else:
-                baseline = (args.baseline_momentum * baseline
-                            + (1 - args.baseline_momentum) * mean_reward)
+            for fam in set(families):
+                fam_rewards = [r["reward"] for r, f in zip(results, families) if f == fam]
+                fam_mean = float(np.mean(fam_rewards))
+                if fam not in baselines_by_family:
+                    baselines_by_family[fam] = fam_mean
+                else:
+                    baselines_by_family[fam] = (args.baseline_momentum * baselines_by_family[fam]
+                                                 + (1 - args.baseline_momentum) * fam_mean)
+            baselines = [baselines_by_family[f] for f in families]
+            baseline = float(np.mean(list(baselines_by_family.values())))  # ログ表示用
 
-            stats = _policy_gradient_update(model, optimizer, results, baseline, args.entropy_coef)
+            stats = _policy_gradient_update(model, optimizer, results, baselines, args.entropy_coef)
             torch.save(model.state_dict(), tmp_ckpt)
 
             elapsed = time.time() - t_start
