@@ -183,14 +183,25 @@ def _policy_gradient_update(model, optimizer, results: list[dict], baselines: li
     `baselines`は`results`と1対1対応（2026-08-12改訂: 家族別の移動平均を使う。
     family1/family2で到達可能なfill/np水準が体系的に異なるため、共通の1本の
     baselineだと「家族間の差」がadvantageに漏れ込み勾配のノイズ源になっていた）。
+
+    2026-08-12再改訂: 家族別baseline単独では防げない不安定性を実測（iter 2〜9・
+    iter 130〜146で2回、entropyがほぼ理論上限まで再上昇する「方策のほぼ完全崩壊」を
+    観測、詳細はHANDOFF.md）。方策勾配法の標準的な安全装置が欠けていたと判断し、
+    (1) advantageをバッチ内標準偏差で正規化（外れ値バッチが更新幅を暴走させるのを防ぐ、
+    家族別baselineによる中心化はそのまま維持しスケールだけ揃える）、
+    (2) 勾配ノルムクリッピング、の2点を追加する。
     """
     model.train()
     optimizer.zero_grad(set_to_none=True)
     total_steps = sum(len(r["trajectory"]) for r in results) or 1
     total_pg_loss = 0.0
     total_entropy = 0.0
-    for r, baseline in zip(results, baselines):
-        advantage = r["reward"] - baseline
+
+    raw_advantages = [r["reward"] - b for r, b in zip(results, baselines)]
+    adv_std = float(np.std(raw_advantages)) if len(raw_advantages) > 1 else 0.0
+    norm_advantages = [a / (adv_std + 1e-6) for a in raw_advantages]
+
+    for r, advantage in zip(results, norm_advantages):
         for step in r["trajectory"]:
             cand_feats = torch.from_numpy(step["cand_feats"])
             ctx_feat = torch.from_numpy(step["ctx_feat"])
@@ -203,9 +214,10 @@ def _policy_gradient_update(model, optimizer, results: list[dict], baselines: li
             loss.backward()
             total_pg_loss += float(pg_loss.item())
             total_entropy += float(entropy.item())
+    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
     return {"pg_loss": total_pg_loss / total_steps, "entropy": total_entropy / total_steps,
-            "total_steps": total_steps}
+            "total_steps": total_steps, "adv_std": adv_std, "grad_norm": float(grad_norm)}
 
 
 def main() -> None:
@@ -302,7 +314,8 @@ def main() -> None:
             print(f"iter={it:05d} n_ep={len(results)} elapsed={elapsed/60:.1f}min "
                   f"reward={mean_reward:.2f} baseline={baseline:.2f} "
                   f"fill={fill_mean:.2f} np={np_mean:.3f} eq_viol={eqv_mean:.3f} "
-                  f"pg_loss={stats['pg_loss']:.4f} entropy={stats['entropy']:.3f}")
+                  f"pg_loss={stats['pg_loss']:.4f} entropy={stats['entropy']:.3f} "
+                  f"adv_std={stats['adv_std']:.3f} grad_norm={stats['grad_norm']:.3f}")
             writer.add_scalar("selfplay/reward_mean", mean_reward, it)
             writer.add_scalar("selfplay/baseline", baseline, it)
             writer.add_scalar("selfplay/fill_mean", fill_mean, it)
@@ -310,6 +323,8 @@ def main() -> None:
             writer.add_scalar("selfplay/eq_violation_mean", eqv_mean, it)
             writer.add_scalar("train/pg_loss", stats["pg_loss"], it)
             writer.add_scalar("train/entropy", stats["entropy"], it)
+            writer.add_scalar("train/adv_std", stats["adv_std"], it)
+            writer.add_scalar("train/grad_norm", stats["grad_norm"], it)
 
             if (it + 1) % args.checkpoint_every == 0:
                 ckpt_path = os.path.join(out_dir, f"model_iter{it+1:05d}.pt")
