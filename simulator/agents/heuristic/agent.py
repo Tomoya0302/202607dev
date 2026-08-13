@@ -909,9 +909,16 @@ class Agent:
                     j, fid = min(visible, key=lambda t: rank.get(t[1], 1 << 30))
                     ci, pos, orn = plan[fid]
                     decided_tuple = (int(j), int(ci), np.asarray(pos, dtype=np.float64), int(orn))
-            # DRL方策計画Phase 4: 候補再ランキング型RL方策（既定OFF）。課題A/Bどちらでも
-            # policy() の全ステップで作用する（optimize() 限定の順序レバー群と異なる）。
-            if decided_tuple is None and GH_RL_POLICY:
+            # DRL方策計画Phase 4/5: 候補再ランキング型RL方策（既定OFF）。
+            # 2026-08-13、n=99×3族評価: family1(課題A・1コンテナ) np/fill横ばい・soft有意改善、
+            # family2(課題A・2コンテナ) np/fill/soft すべて有意改善、
+            # family3(課題B・look_ahead>1) np境界的悪化・cog有意悪化——**課題Bで退行**。
+            # 訓練データ（模倣学習・自己対戦とも）が look_ahead=1 の課題Aタスクのみで、
+            # 複数アイテム同時可視という課題B特有の状況を一度も学習していないことが原因と
+            # 判断し、`GH_ROLLOUT`/`GH_SEQ_TRIPLE`と同じ規約で lookahead_k==1（課題Aのみ）へ
+            # ゲートする。課題B対応は look_ahead>1 の訓練データを追加してから再検討する。
+            if (decided_tuple is None and GH_RL_POLICY
+                    and int(state.meta.get("lookahead_k", 1)) == 1):
                 decided_tuple = _rl_policy_decide(self, state, budget)
             if decided_tuple is None:
                 decided_tuple = decide_placement(state, budget)
