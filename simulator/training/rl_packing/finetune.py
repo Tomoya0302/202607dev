@@ -68,8 +68,10 @@ class _StepBudget:
 
 
 def compute_reward(fill_score: float, num_placed: float, eq_frac_violation: float,
-                    np_weight: float, eq_weight: float) -> float:
-    """report済みPhase 0 findings に基づく報酬合成。
+                    soft_proxy: float, placement_proxy: float,
+                    np_weight: float, eq_weight: float,
+                    soft_weight: float, placement_weight: float) -> float:
+    """報酬合成（2026-08-13改訂: soft/placement保護項を追加）。
 
     fill_score は0-100スケールでそのまま使う。num_placed(0-1) は `np_weight` 倍して
     fill_scoreと同程度の大きさへ揃える（局所npが本番npへ最も信頼できる転移を示す指標
@@ -77,14 +79,29 @@ def compute_reward(fill_score: float, num_placed: float, eq_frac_violation: floa
     equilibrium proxy はfrac_violation（違反した荷物の割合、0-1）をペナルティとして使う
     （Phase 0で実測: 既存cog proxyがr=-0.001だったのに対し、この指標はfrac_violationが
     実cog/stability双方とマイナス方向に強く相関、r=-0.81/-0.73）。
+
+    2026-08-13追記: v57本番実測でsoft_item_score/placement_scoreがローカルn=99の
+    強い正の信号（t=4.01〜4.41）から本番で−6.05/−4.75へ反転する退行が発覚した
+    （`docs/HANDOFF.md` §-6）。原因仮説: 報酬関数にsoft/priority保護のシグナルが
+    一切無かったため、RLファインチューンがfill/np/equilibriumだけを見て、模倣学習で
+    継承していたv52のsoft/priority保護的な振る舞いを気づかないうちに手放していた
+    可能性がある。`scripts/bench_run.py::_quality_proxies`のsoft_proxy/placement_proxy
+    （既存の粗いAABB近似、絶対値は当てにならないが「同じ設定間の相対比較」用途で
+    このプロジェクトが継続的に使ってきた指標）を報酬へ明示的に追加し、RLが
+    これらを崩す方向へ動くことを直接抑止する。**ただしこの2指標もローカル代理に
+    過ぎず、v57で崩壊したsoft_item_scoreそのものではない点に注意**（また転移に
+    失敗する可能性は残る）。
     """
     return (float(fill_score)
             + np_weight * float(num_placed) * 100.0
-            - eq_weight * float(eq_frac_violation) * 100.0)
+            - eq_weight * float(eq_frac_violation) * 100.0
+            + soft_weight * float(soft_proxy)
+            + placement_weight * float(placement_proxy))
 
 
 def run_selfplay_episode(task_config: dict, ckpt_path: str, k: int,
-                          np_weight: float, eq_weight: float, temperature: float,
+                          np_weight: float, eq_weight: float,
+                          soft_weight: float, placement_weight: float, temperature: float,
                           policy_soft: float = 4.5, policy_hard: float = 5.5) -> dict | None:
     """1エピソードを現在方策（サンプリング）で実行し、軌跡+報酬を返す。例外時は None。
 
@@ -98,7 +115,7 @@ def run_selfplay_episode(task_config: dict, ckpt_path: str, k: int,
         )
         from agents.heuristic.packing_core.rl_model import load_policy
         from agents.heuristic.packing_core.state import build_state, make_action
-        from scripts.bench_run import _static_equilibrium_proxy
+        from scripts.bench_run import _quality_proxies, _static_equilibrium_proxy
         from src.ground_handling.env import GroundHandlingEnv
 
         model = load_policy(ckpt_path, device="cpu")
@@ -149,13 +166,18 @@ def run_selfplay_episode(task_config: dict, ckpt_path: str, k: int,
         num_placed = (sum(len(c.packed_items) for c in env.container_manager.containers)
                       / max(1, num_total))
         eq = _static_equilibrium_proxy(env)
+        quality = _quality_proxies(env)
         env.close()
 
-        total_reward = compute_reward(fill_score, num_placed, eq.get("frac_violation", 0.0),
-                                       np_weight, eq_weight)
+        total_reward = compute_reward(
+            fill_score, num_placed, eq.get("frac_violation", 0.0),
+            quality.get("soft_proxy", 100.0), quality.get("placement_proxy", 100.0),
+            np_weight, eq_weight, soft_weight, placement_weight)
         return {"trajectory": trajectory, "reward": total_reward, "fill_score": float(fill_score),
                 "num_placed": float(num_placed),
                 "eq_frac_violation": float(eq.get("frac_violation", 0.0)),
+                "soft_proxy": float(quality.get("soft_proxy", 100.0)),
+                "placement_proxy": float(quality.get("placement_proxy", 100.0)),
                 "n_steps": len(trajectory)}
     except Exception as exc:  # ワーカー内例外はこのエピソードだけスキップする
         import traceback
@@ -240,6 +262,11 @@ def main() -> None:
     # （2026-08-11のsmoke testで実際に踏んだ失敗、reward全体の97%がnp項という結果だった）。
     parser.add_argument("--np-weight", type=float, default=0.5)
     parser.add_argument("--eq-weight", type=float, default=1.0)
+    # 2026-08-13: v57本番実測（Public -3.06、全指標退行、docs/HANDOFF.md §-6）を受けて追加。
+    # soft_proxy/placement_proxyも0-100スケールなのでfill_scoreと同程度、ただし
+    # 主目的（fill/np）を上書きしない程度にnp_weightより小さめを既定にする。
+    parser.add_argument("--soft-weight", type=float, default=0.3)
+    parser.add_argument("--placement-weight", type=float, default=0.3)
     parser.add_argument("--temperature", type=float, default=1.0,
                          help="自己対戦サンプリング時のsoftmax温度。>1で探索を強める。")
     parser.add_argument("--entropy-coef", type=float, default=0.003)
@@ -278,7 +305,8 @@ def main() -> None:
             tasks = _sample_tasks(rng, args.episodes_per_iter, args.seed + it * 1000)
             futures = [
                 pool.submit(run_selfplay_episode, gen_task(fam, seed)["000"], tmp_ckpt,
-                            args.k, args.np_weight, args.eq_weight, args.temperature)
+                            args.k, args.np_weight, args.eq_weight,
+                            args.soft_weight, args.placement_weight, args.temperature)
                 for fam, seed in tasks
             ]
             raw_results = [f.result() for f in futures]
@@ -311,9 +339,12 @@ def main() -> None:
             fill_mean = float(np.mean([r["fill_score"] for r in results]))
             np_mean = float(np.mean([r["num_placed"] for r in results]))
             eqv_mean = float(np.mean([r["eq_frac_violation"] for r in results]))
+            soft_mean = float(np.mean([r["soft_proxy"] for r in results]))
+            plc_mean = float(np.mean([r["placement_proxy"] for r in results]))
             print(f"iter={it:05d} n_ep={len(results)} elapsed={elapsed/60:.1f}min "
                   f"reward={mean_reward:.2f} baseline={baseline:.2f} "
                   f"fill={fill_mean:.2f} np={np_mean:.3f} eq_viol={eqv_mean:.3f} "
+                  f"soft={soft_mean:.1f} plc={plc_mean:.1f} "
                   f"pg_loss={stats['pg_loss']:.4f} entropy={stats['entropy']:.3f} "
                   f"adv_std={stats['adv_std']:.3f} grad_norm={stats['grad_norm']:.3f}")
             writer.add_scalar("selfplay/reward_mean", mean_reward, it)
@@ -321,6 +352,8 @@ def main() -> None:
             writer.add_scalar("selfplay/fill_mean", fill_mean, it)
             writer.add_scalar("selfplay/np_mean", np_mean, it)
             writer.add_scalar("selfplay/eq_violation_mean", eqv_mean, it)
+            writer.add_scalar("selfplay/soft_proxy_mean", soft_mean, it)
+            writer.add_scalar("selfplay/placement_proxy_mean", plc_mean, it)
             writer.add_scalar("train/pg_loss", stats["pg_loss"], it)
             writer.add_scalar("train/entropy", stats["entropy"], it)
             writer.add_scalar("train/adv_std", stats["adv_std"], it)
@@ -336,7 +369,8 @@ def main() -> None:
                                             args.eval_n, args.seed - 1)
                 eval_futures = [
                     pool.submit(run_selfplay_episode, gen_task(fam, seed)["000"], tmp_ckpt,
-                                args.k, args.np_weight, args.eq_weight, 1e-6)  # ほぼargmax相当
+                                args.k, args.np_weight, args.eq_weight,
+                                args.soft_weight, args.placement_weight, 1e-6)  # ほぼargmax相当
                     for fam, seed in eval_tasks
                 ]
                 eval_results = [f.result() for f in eval_futures]
@@ -345,10 +379,14 @@ def main() -> None:
                     eval_reward = float(np.mean([r["reward"] for r in eval_results]))
                     eval_fill = float(np.mean([r["fill_score"] for r in eval_results]))
                     eval_np = float(np.mean([r["num_placed"] for r in eval_results]))
+                    eval_soft = float(np.mean([r["soft_proxy"] for r in eval_results]))
+                    eval_plc = float(np.mean([r["placement_proxy"] for r in eval_results]))
                     print(f"  [eval] n={len(eval_results)} reward={eval_reward:.2f} "
-                          f"fill={eval_fill:.2f} np={eval_np:.3f}")
+                          f"fill={eval_fill:.2f} np={eval_np:.3f} soft={eval_soft:.1f} plc={eval_plc:.1f}")
                     writer.add_scalar("eval/reward", eval_reward, it)
                     writer.add_scalar("eval/fill", eval_fill, it)
+                    writer.add_scalar("eval/soft_proxy", eval_soft, it)
+                    writer.add_scalar("eval/placement_proxy", eval_plc, it)
                     writer.add_scalar("eval/np", eval_np, it)
                     if eval_reward > best_eval_reward:
                         best_eval_reward = eval_reward
