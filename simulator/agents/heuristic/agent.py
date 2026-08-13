@@ -35,8 +35,13 @@ logger = logging.getLogger("packing")
 # 既存の `decide_placement`（v52既定挙動）へ安全にフォールバックする
 # （`GH_ROLLOUT`/`GH_SEQ_TRIPLE`等、既存の全 `GH_*` レバーと同じ防御パターン）。
 GH_RL_POLICY = os.environ.get("GH_RL_POLICY", "0") != "0"
-# 現状は評価目的の暫定パスで、提出zipへのモデル同梱はまだ未対応（計画Phase 4注記）。
-GH_RL_POLICY_CKPT = os.environ.get("GH_RL_POLICY_CKPT", "")
+# 2026-08-13: 既定はモジュール同梱のチェックポイント（packing_core/rl_policy_v3.pt、
+# n=99×3族評価済み・family2で有意改善・family3はlookahead_k==1ゲートで無関係）。
+# `__file__`基準の絶対パスにすることで、提出zip展開後や評価基盤側のcwdに依存せず動く。
+# GH_RL_POLICY_CKPT で明示的に上書きも可能（学習中の別チェックポイントを試す用途）。
+_DEFAULT_RL_CKPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "packing_core", "rl_policy_v3.pt")
+GH_RL_POLICY_CKPT = os.environ.get("GH_RL_POLICY_CKPT", "") or _DEFAULT_RL_CKPT
 GH_RL_POLICY_K = int(os.environ.get("GH_RL_POLICY_K", "64") or "64")
 
 
